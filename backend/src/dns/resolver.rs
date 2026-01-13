@@ -198,14 +198,18 @@ impl DnsResolver {
         metadata.upstream_used = Some(query_result.server_name.clone());
         metadata.response_time_ms = start.elapsed().as_millis() as u64;
 
+        // Restore original query ID in response (important for DoQ which uses ID=0)
+        let mut response = query_result.response;
+        response.id = query.id;
+
         // Step 5: Cache the response (only if successful)
-        if query_result.response.response_code == DnsResponseCode::NoError {
-            self.cache.set(cache_key, query_result.response.clone()).await;
+        if response.response_code == DnsResponseCode::NoError {
+            self.cache.set(cache_key, response.clone()).await;
         }
 
-        let answers: Vec<String> = query_result.response.answers.iter().map(|a| a.value.clone()).collect();
+        let answers: Vec<String> = response.answers.iter().map(|a| a.value.clone()).collect();
         let result_str = if answers.is_empty() {
-            format!("{}", query_result.response.response_code)
+            format!("{}", response.response_code)
         } else {
             answers.join(", ")
         };
@@ -215,7 +219,7 @@ impl DnsResolver {
         );
 
         Ok(ResolveResult {
-            response: query_result.response,
+            response,
             metadata,
         })
     }
@@ -471,13 +475,17 @@ impl DnsResolver {
             metadata.upstream_used = Some(query_result.server_name);
             metadata.response_time_ms = start.elapsed().as_millis() as u64;
 
+            // Restore original query ID in response (important for DoQ which uses ID=0)
+            let mut response = query_result.response;
+            response.id = query.id;
+
             // Cache the response
-            if query_result.response.response_code == DnsResponseCode::NoError {
-                self.cache.set(cache_key, query_result.response.clone()).await;
+            if response.response_code == DnsResponseCode::NoError {
+                self.cache.set(cache_key, response.clone()).await;
             }
 
             Ok(ResolveResult {
-                response: query_result.response,
+                response,
                 metadata,
             })
         })
