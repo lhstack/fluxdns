@@ -4,15 +4,94 @@
 //! using different protocols (UDP, DoT, DoH, DoQ).
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use tokio::net::UdpSocket;
+use tokio::sync::OnceCell;
 use tokio::time::timeout;
 
 use crate::dns::message::{DnsQuery, DnsResponse};
 use super::upstream::{UpstreamServer, UpstreamProtocol};
+
+/// Global QUIC endpoint cache for DoQ clients
+/// Reusing endpoints significantly improves performance by avoiding
+/// repeated socket binding and configuration overhead.
+static DOQ_ENDPOINT_V4: OnceCell<quinn::Endpoint> = OnceCell::const_new();
+static DOQ_ENDPOINT_V6: OnceCell<quinn::Endpoint> = OnceCell::const_new();
+
+/// Global QUIC endpoint cache for DoH3 clients
+static DOH3_ENDPOINT_V4: OnceCell<quinn::Endpoint> = OnceCell::const_new();
+static DOH3_ENDPOINT_V6: OnceCell<quinn::Endpoint> = OnceCell::const_new();
+
+/// Global DoT connection pool
+/// Key: "host:port", Value: TLS stream
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
+use tokio_rustls::client::TlsStream;
+use tokio::net::TcpStream;
+
+type DotConnection = TlsStream<TcpStream>;
+static DOT_POOL: OnceLock<Mutex<HashMap<String, DotConnection>>> = OnceLock::new();
+
+fn get_dot_pool() -> &'static Mutex<HashMap<String, DotConnection>> {
+    DOT_POOL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// QUIC protocol type for endpoint caching
+#[derive(Clone, Copy)]
+enum QuicProtocol {
+    Doq,
+    Doh3,
+}
+
+/// Get or create a cached QUIC endpoint for the given protocol and address family
+fn get_quic_endpoint(protocol: QuicProtocol, is_ipv6: bool) -> Result<&'static quinn::Endpoint> {
+    let cell = match (protocol, is_ipv6) {
+        (QuicProtocol::Doq, false) => &DOQ_ENDPOINT_V4,
+        (QuicProtocol::Doq, true) => &DOQ_ENDPOINT_V6,
+        (QuicProtocol::Doh3, false) => &DOH3_ENDPOINT_V4,
+        (QuicProtocol::Doh3, true) => &DOH3_ENDPOINT_V6,
+    };
+    
+    // Try to get existing endpoint
+    if let Some(endpoint) = cell.get() {
+        return Ok(endpoint);
+    }
+    
+    // Create new endpoint with appropriate config
+    let bind_addr: SocketAddr = if is_ipv6 {
+        "[::]:0".parse()?
+    } else {
+        "0.0.0.0:0".parse()?
+    };
+    
+    // Create TLS config with certificate verification disabled (for IP-based connections)
+    let mut crypto = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoVerifier))
+        .with_no_client_auth();
+    
+    // Set ALPN protocol based on QUIC protocol type
+    crypto.alpn_protocols = match protocol {
+        QuicProtocol::Doq => vec![b"doq".to_vec()],
+        QuicProtocol::Doh3 => vec![b"h3".to_vec()],
+    };
+    
+    let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
+        .map_err(|e| anyhow!("Failed to create QUIC client config: {}", e))?;
+    let client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+    
+    let mut endpoint = quinn::Endpoint::client(bind_addr)?;
+    endpoint.set_default_client_config(client_config);
+    
+    // Try to store it, but if another task beat us, use theirs
+    let _ = cell.set(endpoint);
+    Ok(cell.get().unwrap())
+}
 
 /// Result of a DNS query to an upstream server
 #[derive(Debug, Clone)]
@@ -163,6 +242,7 @@ impl DnsClient for UdpDnsClient {
 /// DoT (DNS over TLS) Client
 ///
 /// Queries upstream DNS servers using DNS over TLS protocol.
+/// Supports connection reuse for better performance.
 pub struct DotDnsClient {
     server: UpstreamServer,
 }
@@ -185,19 +265,13 @@ impl DotDnsClient {
         }
         Ok((self.server.address.clone(), UpstreamProtocol::Dot.default_port()))
     }
-}
 
-#[async_trait]
-impl DnsClient for DotDnsClient {
-    async fn query(&self, query: &DnsQuery) -> Result<QueryResult> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::TcpStream;
+    /// Create a new TLS connection
+    async fn create_connection(&self, host: &str, port: u16) -> Result<DotConnection> {
         use tokio_rustls::TlsConnector;
         use rustls::{ClientConfig, RootCertStore};
         use rustls::pki_types::ServerName;
-        use std::sync::Arc;
 
-        let (host, port) = self.parse_address()?;
         let addr = format!("{}:{}", host, port);
         
         // Create TLS config with system root certificates
@@ -209,37 +283,99 @@ impl DnsClient for DotDnsClient {
             .with_no_client_auth();
         
         let connector = TlsConnector::from(Arc::new(config));
-        let server_name = ServerName::try_from(host.clone())
+        let server_name = ServerName::try_from(host.to_string())
             .map_err(|_| anyhow!("Invalid server name"))?;
-        
-        let start = Instant::now();
         
         // Connect with timeout
         let stream = timeout(self.server.timeout, TcpStream::connect(&addr)).await
             .map_err(|_| anyhow!("Connection timeout"))??;
         
-        let mut tls_stream = timeout(self.server.timeout, connector.connect(server_name, stream)).await
+        let tls_stream = timeout(self.server.timeout, connector.connect(server_name, stream)).await
             .map_err(|_| anyhow!("TLS handshake timeout"))??;
         
+        Ok(tls_stream)
+    }
+
+    /// Send query over an existing connection, returns None if connection is broken
+    async fn send_query_on_conn(
+        &self,
+        conn: &mut DotConnection,
+        query: &DnsQuery,
+    ) -> Result<Vec<u8>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
         // Encode query with length prefix (TCP DNS format)
         let query_bytes = query.to_bytes()
             .map_err(|e| anyhow!("Failed to encode query: {}", e))?;
         let len = (query_bytes.len() as u16).to_be_bytes();
         
-        tls_stream.write_all(&len).await?;
-        tls_stream.write_all(&query_bytes).await?;
-        tls_stream.flush().await?;
+        conn.write_all(&len).await?;
+        conn.write_all(&query_bytes).await?;
+        conn.flush().await?;
         
         // Read response length
         let mut len_buf = [0u8; 2];
-        timeout(self.server.timeout, tls_stream.read_exact(&mut len_buf)).await
+        timeout(self.server.timeout, conn.read_exact(&mut len_buf)).await
             .map_err(|_| anyhow!("Read timeout"))??;
         let response_len = u16::from_be_bytes(len_buf) as usize;
         
         // Read response
         let mut response_bytes = vec![0u8; response_len];
-        timeout(self.server.timeout, tls_stream.read_exact(&mut response_bytes)).await
+        timeout(self.server.timeout, conn.read_exact(&mut response_bytes)).await
             .map_err(|_| anyhow!("Read timeout"))??;
+        
+        Ok(response_bytes)
+    }
+}
+
+#[async_trait]
+impl DnsClient for DotDnsClient {
+    async fn query(&self, query: &DnsQuery) -> Result<QueryResult> {
+        use tracing::debug;
+
+        let (host, port) = self.parse_address()?;
+        let pool_key = format!("{}:{}", host, port);
+        
+        let start = Instant::now();
+        
+        // Try to reuse existing connection
+        let pool = get_dot_pool();
+        let mut conn_opt = {
+            let mut pool_guard = pool.lock().await;
+            pool_guard.remove(&pool_key)
+        };
+        
+        let response_bytes = if let Some(ref mut conn) = conn_opt {
+            // Try to use existing connection
+            match self.send_query_on_conn(conn, query).await {
+                Ok(bytes) => {
+                    debug!("DoT query succeeded on reused connection to {}", pool_key);
+                    // Put connection back to pool
+                    let mut pool_guard = pool.lock().await;
+                    pool_guard.insert(pool_key.clone(), conn_opt.take().unwrap());
+                    bytes
+                }
+                Err(e) => {
+                    debug!("DoT reused connection failed: {}, creating new connection", e);
+                    // Connection broken, create new one
+                    let mut new_conn = self.create_connection(&host, port).await?;
+                    let bytes = self.send_query_on_conn(&mut new_conn, query).await?;
+                    // Put new connection to pool
+                    let mut pool_guard = pool.lock().await;
+                    pool_guard.insert(pool_key.clone(), new_conn);
+                    bytes
+                }
+            }
+        } else {
+            // No existing connection, create new one
+            debug!("DoT creating new connection to {}", pool_key);
+            let mut new_conn = self.create_connection(&host, port).await?;
+            let bytes = self.send_query_on_conn(&mut new_conn, query).await?;
+            // Put connection to pool
+            let mut pool_guard = pool.lock().await;
+            pool_guard.insert(pool_key.clone(), new_conn);
+            bytes
+        };
         
         let response_time = start.elapsed();
         
@@ -428,39 +564,13 @@ impl DoqDnsClient {
 #[async_trait]
 impl DnsClient for DoqDnsClient {
     async fn query(&self, query: &DnsQuery) -> Result<QueryResult> {
-        use quinn::{ClientConfig, Endpoint};
-        use rustls::RootCertStore;
-        use std::sync::Arc;
         use tracing::debug;
 
         let (addr, sni_host) = self.resolve_address().await?;
         debug!("DoQ connecting to {} (SNI: {})", addr, sni_host);
         
-        // Create QUIC client config
-        let mut root_store = RootCertStore::empty();
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let mut crypto = rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(NoVerifier))
-            .with_no_client_auth();
-        
-        // Set ALPN protocol for DoQ (RFC 9250)
-        crypto.alpn_protocols = vec![b"doq".to_vec()];
-        
-        // Create QUIC client config using quinn's crypto wrapper
-        let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
-            .map_err(|e| anyhow!("Failed to create QUIC client config: {}", e))?;
-        let client_config = ClientConfig::new(Arc::new(quic_crypto));
-        
-        // Bind to appropriate address based on target (IPv4 or IPv6)
-        let bind_addr: SocketAddr = if addr.is_ipv6() {
-            "[::]:0".parse()?
-        } else {
-            "0.0.0.0:0".parse()?
-        };
-        
-        let mut endpoint = Endpoint::client(bind_addr)?;
-        endpoint.set_default_client_config(client_config);
+        // Get or create cached endpoint (reuse for better performance)
+        let endpoint = get_quic_endpoint(QuicProtocol::Doq, addr.is_ipv6())?;
         
         let start = Instant::now();
         
@@ -719,46 +829,13 @@ impl DnsClient for Doh3DnsClient {
         
         debug!("DoH3 connecting to {} (SNI: {}, path: {})", addr, sni_host, path);
 
-        // Create QUIC client config
-        let mut root_store = rustls::RootCertStore::empty();
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-        let is_ip = sni_host.parse::<std::net::IpAddr>().is_ok();
-        
-        let mut crypto = if is_ip {
-            let config = rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(std::sync::Arc::new(NoVerifier))
-                .with_no_client_auth();
-            config
-        } else {
-            rustls::ClientConfig::builder()
-                .with_root_certificates(root_store.clone())
-                .with_no_client_auth()
-        };
-
-        // Set ALPN for HTTP/3
-        crypto.alpn_protocols = vec![b"h3".to_vec()];
-
-        // Create QUIC client config using quinn's crypto wrapper
-        let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
-            .map_err(|e| anyhow!("Failed to create QUIC client config: {}", e))?;
-        let client_config = quinn::ClientConfig::new(std::sync::Arc::new(quic_crypto));
-
-        // Bind to appropriate address
-        let bind_addr: std::net::SocketAddr = if addr.is_ipv6() {
-            "[::]:0".parse()?
-        } else {
-            "0.0.0.0:0".parse()?
-        };
-
-        let mut endpoint = quinn::Endpoint::client(bind_addr)?;
-        endpoint.set_default_client_config(client_config);
+        // Get or create cached endpoint (reuse for better performance)
+        let endpoint = get_quic_endpoint(QuicProtocol::Doh3, addr.is_ipv6())?;
 
         let start = std::time::Instant::now();
 
-        // Connect
-        let connect_sni = if is_ip { "dns" } else { sni_host.as_str() };
+        // Connect - use "dns" as SNI for IP addresses
+        let connect_sni = sni_host.as_str();
         debug!("DoH3 using SNI: {}", connect_sni);
 
         let connection = timeout(

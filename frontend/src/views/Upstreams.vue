@@ -55,6 +55,21 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <div class="pagination-container">
+        <el-pagination
+          v-model:current-page="pagination.page"
+          v-model:page-size="pagination.pageSize"
+          :page-sizes="[5, 10, 20, 50, 100]"
+          :total="pagination.total"
+          layout="total, sizes, prev, pager, next, jumper"
+          :pager-count="5"
+          prev-text="上一页"
+          next-text="下一页"
+          @size-change="handleSizeChange"
+          @current-change="handlePageChange"
+        />
+      </div>
     </el-card>
 
     <!-- Create/Edit Dialog -->
@@ -149,6 +164,12 @@ const formRef = ref<FormInstance>()
 const editingId = ref<number | null>(null)
 let statusInterval: ReturnType<typeof setInterval> | null = null
 
+const pagination = reactive({
+  page: 1,
+  pageSize: 20,
+  total: 0
+})
+
 const formData = reactive({
   name: '',
   address: '',
@@ -216,13 +237,30 @@ function getAddressPlaceholder(protocol: string): string {
 async function fetchServers() {
   loading.value = true
   try {
-    const response = await api.get('/api/upstreams')
+    const response = await api.get('/api/upstreams', {
+      params: {
+        page: pagination.page,
+        page_size: pagination.pageSize
+      }
+    })
     servers.value = response.data.data
+    pagination.total = response.data.total
   } catch (error: any) {
     ElMessage.error(error.response?.data?.message || '获取服务器列表失败')
   } finally {
     loading.value = false
   }
+}
+
+function handleSizeChange(size: number) {
+  pagination.pageSize = size
+  pagination.page = 1
+  fetchServers()
+}
+
+function handlePageChange(page: number) {
+  pagination.page = page
+  fetchServers()
 }
 
 async function fetchStatus() {
@@ -363,5 +401,11 @@ onUnmounted(() => {
 .unit-label {
   margin-left: 10px;
   color: #999;
+}
+
+.pagination-container {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 20px;
 }
 </style>

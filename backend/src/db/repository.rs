@@ -310,7 +310,7 @@ impl UpstreamServerRepository {
     /// List all upstream servers
     pub async fn list(&self) -> Result<Vec<UpstreamServer>> {
         let result = sqlx::query_as::<_, UpstreamServer>(
-            "SELECT * FROM upstream_servers ORDER BY name",
+            "SELECT * FROM upstream_servers ORDER BY id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -318,10 +318,29 @@ impl UpstreamServerRepository {
         Ok(result)
     }
 
+    /// List upstream servers with pagination
+    pub async fn list_paged(&self, page: i64, page_size: i64) -> Result<(Vec<UpstreamServer>, i64)> {
+        let offset = (page - 1) * page_size;
+        
+        let result = sqlx::query_as::<_, UpstreamServer>(
+            "SELECT * FROM upstream_servers ORDER BY id LIMIT ? OFFSET ?",
+        )
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM upstream_servers")
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok((result, total.0))
+    }
+
     /// List enabled upstream servers
     pub async fn list_enabled(&self) -> Result<Vec<UpstreamServer>> {
         let result = sqlx::query_as::<_, UpstreamServer>(
-            "SELECT * FROM upstream_servers WHERE enabled = TRUE ORDER BY name",
+            "SELECT * FROM upstream_servers WHERE enabled = TRUE ORDER BY id",
         )
         .fetch_all(&self.pool)
         .await?;

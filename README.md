@@ -13,10 +13,10 @@
 
 ### 上游服务器协议支持
 - **UDP** - 标准 DNS 上游
-- **DoT** - DNS over TLS 上游
+- **DoT** - DNS over TLS 上游 (支持连接复用)
 - **DoH** - DNS over HTTPS 上游
-- **DoQ** - DNS over QUIC 上游
-- **DoH3** - DNS over HTTP/3 上游
+- **DoQ** - DNS over QUIC 上游 (支持 Endpoint 复用)
+- **DoH3** - DNS over HTTP/3 上游 (支持 Endpoint 复用)
 
 ### 核心功能
 - 多上游 DNS 服务器支持
@@ -25,12 +25,13 @@
 - 域名重写规则
 - 本地 DNS 记录
 - 查询日志记录
+- 链路追踪 (trace_id) 支持
 
 ### Web 管理界面
 - 仪表盘统计
 - DNS 记录管理
 - 重写规则配置
-- 上游服务器管理
+- 上游服务器管理 (支持分页)
 - 缓存管理
 - 查询日志查看
 - 服务监听配置

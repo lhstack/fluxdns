@@ -82,7 +82,26 @@ pub struct UpstreamServerResponse {
 #[derive(Debug, Serialize)]
 pub struct UpstreamServersListResponse {
     pub data: Vec<UpstreamServer>,
-    pub total: usize,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+}
+
+/// Pagination query parameters
+#[derive(Debug, Deserialize)]
+pub struct PaginationQuery {
+    #[serde(default = "default_page")]
+    pub page: i64,
+    #[serde(default = "default_page_size")]
+    pub page_size: i64,
+}
+
+fn default_page() -> i64 {
+    1
+}
+
+fn default_page_size() -> i64 {
+    20
 }
 
 /// Server status information
@@ -291,22 +310,29 @@ impl UpdateUpstreamServerRequest {
     }
 }
 
-/// List all upstream servers
+/// List all upstream servers with pagination
 ///
-/// GET /api/upstreams
+/// GET /api/upstreams?page=1&page_size=20
 pub async fn list_upstreams(
     State(state): State<UpstreamsState>,
+    axum::extract::Query(pagination): axum::extract::Query<PaginationQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let repo = state.db.upstream_servers();
 
-    let servers = repo.list().await.map_err(|e| ApiError {
+    // Validate pagination parameters
+    let page = pagination.page.max(1);
+    let page_size = pagination.page_size.clamp(1, 100);
+
+    let (servers, total) = repo.list_paged(page, page_size).await.map_err(|e| ApiError {
         code: "INTERNAL_ERROR".to_string(),
         message: format!("Failed to list upstream servers: {}", e),
         details: None,
     })?;
 
     Ok(Json(UpstreamServersListResponse {
-        total: servers.len(),
+        total,
+        page,
+        page_size,
         data: servers,
     }))
 }
