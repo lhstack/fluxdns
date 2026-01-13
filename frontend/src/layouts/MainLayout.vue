@@ -2,7 +2,8 @@
   <el-container class="layout-container">
     <el-aside width="220px" class="sidebar">
       <div class="logo">
-        <h2>DNS Proxy</h2>
+        <img src="/logo.svg" alt="FluxDNS" class="logo-icon" />
+        <h2>FluxDNS</h2>
       </div>
       <el-menu
         :default-active="activeMenu"
@@ -95,11 +96,19 @@ function handleLogout() {
   align-items: center;
   justify-content: center;
   color: #fff;
+  gap: 8px;
+}
+
+.logo-icon {
+  width: 32px;
+  height: 32px;
 }
 
 .logo h2 {
   margin: 0;
   font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 1px;
 }
 
 .header {

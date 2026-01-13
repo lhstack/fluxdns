@@ -64,6 +64,7 @@ impl CacheEntry {
     }
 
     /// Get the remaining TTL in seconds
+    #[allow(dead_code)]
     pub fn remaining_ttl(&self) -> u64 {
         let now = Instant::now();
         if now >= self.expires_at {

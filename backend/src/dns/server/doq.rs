@@ -3,6 +3,8 @@
 //! Implements a DNS server over QUIC protocol (port 853).
 //! Based on RFC 9250.
 
+#![allow(dead_code)]
+
 use std::fs::File;
 use std::io::BufReader;
 use std::net::SocketAddr;
@@ -10,7 +12,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use quinn::{Endpoint, ServerConfig};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::pki_types::CertificateDer;
 use rustls_pemfile::{certs, private_key};
 use tracing::{debug, info, warn};
 

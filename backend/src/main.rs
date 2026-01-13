@@ -1,11 +1,7 @@
-//! DNS Proxy Service
+//! FluxDNS
 //!
-//! A full-featured DNS proxy service supporting multiple protocols (UDP, DoT, DoH, DoQ)
+//! A modern DNS proxy service supporting multiple protocols (UDP, DoT, DoH, DoQ, DoH3)
 //! with a web management interface.
-//!
-//! # Requirements
-//! - 1.5: Support simultaneous listening on multiple protocol ports
-//! - 4.2: Embed frontend resources into binary using rust-embed
 
 mod config;
 mod db;
@@ -68,7 +64,7 @@ async fn main() -> Result<()> {
     };
     LogManager::init_with_config(log_config.clone())?;
 
-    info!("Starting DNS Proxy Service...");
+    info!("Starting FluxDNS...");
     info!("Configuration loaded");
 
     // Initialize database
@@ -78,14 +74,14 @@ async fn main() -> Result<()> {
     // Create log manager for cleanup operations
     let log_manager = Arc::new(LogManager::new(log_config));
 
-    // Load cache config from database, fallback to config file values
+    // Load cache config from database
     let cache_ttl = match db.system_config().get("cache_default_ttl").await? {
-        Some(v) => v.parse().unwrap_or(app_config.cache_ttl),
-        None => app_config.cache_ttl,
+        Some(v) => v.parse().unwrap_or(60),
+        None => 60,
     };
     let cache_max_entries = match db.system_config().get("cache_max_entries").await? {
-        Some(v) => v.parse().unwrap_or(app_config.cache_max_entries),
-        None => app_config.cache_max_entries,
+        Some(v) => v.parse().unwrap_or(10000),
+        None => 10000,
     };
 
     // Initialize DNS components
@@ -123,7 +119,7 @@ async fn main() -> Result<()> {
     info!("DNS resolver initialized");
 
     // Create application state
-    let state = Arc::new(AppState {
+    let _state = Arc::new(AppState {
         config: config.clone(),
         db: db.clone(),
         log_manager: log_manager.clone(),
@@ -149,26 +145,38 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Start DNS servers
+    // Start DNS servers based on database configuration
     let mut handles = Vec::new();
 
-    // Start UDP DNS server
-    let udp_addr: SocketAddr = format!("0.0.0.0:{}", app_config.dns_udp_port).parse()?;
-    let udp_resolver = resolver.clone();
-    handles.push(tokio::spawn(async move {
-        match UdpDnsServer::new(udp_addr, udp_resolver).await {
-            Ok(server) => {
-                info!("UDP DNS server listening on {}", udp_addr);
-                let server = Arc::new(server);
-                if let Err(e) = server.run().await {
-                    tracing::error!("UDP DNS server error: {}", e);
-                }
+    // Load enabled listeners from database
+    let listeners = db.server_listeners().list_enabled().await?;
+    
+    for listener in &listeners {
+        match listener.protocol.as_str() {
+            "udp" => {
+                let udp_addr: SocketAddr = format!("{}:{}", listener.bind_address, listener.port).parse()?;
+                let udp_resolver = resolver.clone();
+                handles.push(tokio::spawn(async move {
+                    match UdpDnsServer::new(udp_addr, udp_resolver).await {
+                        Ok(server) => {
+                            info!("UDP DNS server listening on {}", udp_addr);
+                            let server = Arc::new(server);
+                            if let Err(e) = server.run().await {
+                                tracing::error!("UDP DNS server error: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to start UDP DNS server: {}", e);
+                        }
+                    }
+                }));
             }
-            Err(e) => {
-                tracing::error!("Failed to start UDP DNS server: {}", e);
+            // DoT, DoH, DoQ servers would be started here when TLS is configured
+            _ => {
+                info!("Listener {} configured but not yet implemented in startup", listener.protocol);
             }
         }
-    }));
+    }
 
     // Start DoH DNS server (integrated with web server)
     let doh_server = DohDnsServer::new(resolver.clone());
@@ -264,30 +272,26 @@ async fn main() -> Result<()> {
         }
     }));
 
-    info!("DNS Proxy Service started successfully");
-    info!("  - UDP DNS: 0.0.0.0:{}", app_config.dns_udp_port);
+    info!("FluxDNS started successfully");
     info!("  - Web UI: http://0.0.0.0:{}", app_config.web_port);
     info!("  - DoH: http://0.0.0.0:{}/dns-query", app_config.web_port);
-
-    // Note: DoT and DoQ servers require TLS certificates
-    if app_config.tls_cert_path.is_some() && app_config.tls_key_path.is_some() {
-        info!("  - DoT: 0.0.0.0:{} (TLS configured)", app_config.dns_dot_port);
-        info!("  - DoQ: 0.0.0.0:{} (TLS configured)", app_config.dns_doq_port);
-    } else {
-        info!("  - DoT/DoQ: Disabled (no TLS certificates configured)");
+    
+    // Log enabled listeners
+    for listener in &listeners {
+        info!("  - {}: {}:{}", listener.protocol.to_uppercase(), listener.bind_address, listener.port);
     }
 
     // Wait for shutdown signal
     shutdown_signal().await;
 
-    info!("Shutting down DNS Proxy Service...");
+    info!("Shutting down FluxDNS...");
 
     // Abort all server tasks
     for handle in handles {
         handle.abort();
     }
 
-    info!("DNS Proxy Service stopped");
+    info!("FluxDNS stopped");
     Ok(())
 }
 

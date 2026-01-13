@@ -14,5 +14,6 @@ mod strategy;
 mod forwarding_tests;
 
 pub use upstream::*;
+#[allow(unused_imports)]
 pub use client::*;
 pub use strategy::*;

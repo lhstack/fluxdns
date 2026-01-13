@@ -1,5 +1,7 @@
 //! Error types for the DNS Proxy Service
 
+#![allow(dead_code)]
+
 use thiserror::Error;
 
 /// Main error type for the application

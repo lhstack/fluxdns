@@ -493,7 +493,7 @@ pub async fn get_status(
 
 /// Build the upstream servers API router
 pub fn upstreams_router(state: UpstreamsState) -> axum::Router {
-    use axum::routing::{delete, get, post, put};
+    use axum::routing::get;
 
     axum::Router::new()
         .route("/", get(list_upstreams).post(create_upstream))

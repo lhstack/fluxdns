@@ -1,4 +1,4 @@
-# DNS Proxy Service
+# FluxDNS
 
 一个功能完整的 DNS 代理服务，支持多种协议和 Web 管理界面。
 
@@ -10,6 +10,13 @@
 - **DoT** - DNS over TLS (端口 853)
 - **DoQ** - DNS over QUIC (端口 853)
 - **DoH3** - DNS over HTTP/3 (端口 443)
+
+### 上游服务器协议支持
+- **UDP** - 标准 DNS 上游
+- **DoT** - DNS over TLS 上游
+- **DoH** - DNS over HTTPS 上游
+- **DoQ** - DNS over QUIC 上游
+- **DoH3** - DNS over HTTP/3 上游
 
 ### 核心功能
 - 多上游 DNS 服务器支持
@@ -37,6 +44,7 @@
 - SQLite (数据库)
 - trust-dns-proto (DNS 协议)
 - Quinn (QUIC 支持)
+- rustls (TLS 支持)
 - h3/h3-quinn (HTTP/3 支持)
 
 ### 前端
@@ -75,19 +83,72 @@ cargo run --release
 
 ## 配置
 
+FluxDNS 采用分层配置方式：
+- **数据库配置** (通过 Web 界面管理): DNS 监听器、上游服务器、缓存设置、查询策略
+- **文件/环境变量配置**: 数据库路径、Web 端口、管理员账户、日志设置
+
 ### 环境变量
 复制 `backend/.env.example` 为 `backend/.env` 并修改配置：
 
 ```env
-DATABASE_URL=sqlite:dns_proxy.db?mode=rwc
+# 数据库
+DATABASE_URL=sqlite:fluxdns.db?mode=rwc
+
+# Web 管理端口
 WEB_PORT=8080
-DNS_UDP_PORT=53
+
+# 管理员账户 (生产环境请修改!)
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin
+
+# 日志配置
+LOG_PATH=logs
 LOG_LEVEL=info
+LOG_MAX_SIZE=10485760
+LOG_RETENTION_DAYS=30
 ```
 
 ### 默认账户
 - 用户名: `admin`
 - 密码: `admin`
+
+### Web 界面配置项
+以下配置通过 Web 管理界面进行管理：
+- **服务监听**: UDP/DoT/DoH/DoQ/DoH3 的端口、绑定地址、TLS 证书
+- **上游服务器**: 添加/编辑/删除上游 DNS 服务器
+- **缓存设置**: TTL、最大条目数
+- **查询策略**: 并发/轮询/随机/最快
+
+## 上游服务器配置示例
+
+### UDP
+```
+8.8.8.8:53
+1.1.1.1:53
+```
+
+### DoT (DNS over TLS)
+```
+dns.google:853
+cloudflare-dns.com:853
+```
+
+### DoH (DNS over HTTPS)
+```
+https://dns.google/dns-query
+https://cloudflare-dns.com/dns-query
+```
+
+### DoQ (DNS over QUIC)
+```
+dns.adguard.com:853
+94.140.14.14:853
+```
+
+### DoH3 (DNS over HTTP/3)
+```
+https://dns.adguard-dns.com/dns-query
+```
 
 ## API 端点
 

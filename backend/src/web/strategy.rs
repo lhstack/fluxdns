@@ -183,7 +183,7 @@ pub async fn get_available_strategies() -> Result<impl IntoResponse, ApiError> {
 
 /// Build the strategy API router
 pub fn strategy_router(state: StrategyState) -> axum::Router {
-    use axum::routing::{get, put};
+    use axum::routing::get;
 
     axum::Router::new()
         .route("/", get(get_strategy).put(update_strategy))

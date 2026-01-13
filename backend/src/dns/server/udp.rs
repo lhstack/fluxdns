@@ -2,6 +2,8 @@
 //!
 //! Implements a standard DNS server over UDP protocol (port 53).
 
+#![allow(dead_code)]
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 

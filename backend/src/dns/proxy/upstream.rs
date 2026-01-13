@@ -212,6 +212,7 @@ impl UpstreamStats {
 
 /// Health check result
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct HealthCheckResult {
     /// Server ID
     pub server_id: i64,
@@ -235,6 +236,7 @@ pub struct UpstreamManager {
     /// Database connection for persistence
     db: Option<Arc<Database>>,
     /// Health check interval
+    #[allow(dead_code)]
     health_check_interval: Duration,
 }
 

@@ -3,10 +3,11 @@
 //! Implements a DNS server over HTTPS protocol (port 443).
 //! Supports both GET and POST methods as per RFC 8484.
 
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use axum::{
-    body::Bytes,
     extract::{Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},

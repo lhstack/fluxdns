@@ -444,51 +444,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dns-proxy-service"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64 0.21.7",
- "bcrypt",
- "bytes",
- "chrono",
- "dotenvy",
- "futures",
- "h3",
- "h3-quinn",
- "http 1.4.0",
- "jsonwebtoken",
- "mime_guess",
- "proptest",
- "quinn",
- "rand 0.8.5",
- "regex",
- "reqwest",
- "rust-embed",
- "rustls 0.23.36",
- "rustls-pemfile 2.2.0",
- "serde",
- "serde_json",
- "sqlx",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-rustls 0.26.4",
- "tokio-test",
- "toml",
- "tower 0.4.13",
- "tower-http",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "trust-dns-proto",
- "uuid",
- "webpki-roots 0.26.11",
-]
-
-[[package]]
 name = "dotenvy"
 version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -590,6 +545,51 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "spin",
+]
+
+[[package]]
+name = "fluxdns"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.21.7",
+ "bcrypt",
+ "bytes",
+ "chrono",
+ "dotenvy",
+ "futures",
+ "h3",
+ "h3-quinn",
+ "http 1.4.0",
+ "jsonwebtoken",
+ "mime_guess",
+ "proptest",
+ "quinn",
+ "rand 0.8.5",
+ "regex",
+ "reqwest",
+ "rust-embed",
+ "rustls 0.23.36",
+ "rustls-pemfile 2.2.0",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tokio-test",
+ "toml",
+ "tower 0.4.13",
+ "tower-http",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "trust-dns-proto",
+ "uuid",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

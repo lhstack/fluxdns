@@ -237,10 +237,8 @@ impl Database {
         if count.0 == 0 {
             // Insert default upstream servers
             let default_servers = [
-                ("Google DNS", "8.8.8.8:53", "udp"),
-                ("Google DNS Secondary", "8.8.4.4:53", "udp"),
-                ("Cloudflare DNS", "1.1.1.1:53", "udp"),
-                ("Cloudflare DNS Secondary", "1.0.0.1:53", "udp"),
+                ("阿里云H3", "https://223.6.6.6/dns-query", "doh3"),
+                ("阿里云Quic", "223.5.5.5:853", "doq")
             ];
 
             for (name, address, protocol) in default_servers {

@@ -1,71 +1,34 @@
-# DNS Proxy Service 配置文件示例
-# DNS Proxy Service Configuration Example
-#
-# 配置优先级 (Configuration Priority):
-# 1. 环境变量 (Environment variables) - 最高优先级
-# 2. 配置文件 (Config file) - 本文件
-# 3. 默认值 (Default values) - 最低优先级
+# FluxDNS 配置文件
+# FluxDNS Configuration File
 #
 # 将此文件复制为 config.toml 并根据需要修改
 # Copy this file to config.toml and modify as needed
-
-# =============================================================================
-# DNS 服务端口配置 (DNS Service Port Configuration)
-# =============================================================================
-
-# UDP DNS 服务端口 (标准 DNS)
-# UDP DNS service port (standard DNS)
-# 默认值: 53
-dns_udp_port = 53
-
-# DNS over TLS (DoT) 服务端口
-# DNS over TLS (DoT) service port
-# 默认值: 853
-dns_dot_port = 853
-
-# DNS over HTTPS (DoH) 服务端口
-# DNS over HTTPS (DoH) service port
-# 默认值: 443
-dns_doh_port = 443
-
-# DNS over QUIC (DoQ) 服务端口
-# DNS over QUIC (DoQ) service port
-# 默认值: 8853
-dns_doq_port = 8853
-
-# =============================================================================
-# Web 管理界面配置 (Web Management Interface Configuration)
-# =============================================================================
-
-# Web 服务端口
-# Web service port
-# 默认值: 8080
-web_port = 8080
-
-# =============================================================================
-# TLS 证书配置 (TLS Certificate Configuration)
-# =============================================================================
-
-# TLS 证书文件路径 (用于 DoT, DoH, DoQ)
-# TLS certificate file path (for DoT, DoH, DoQ)
-# 如果不配置，加密 DNS 服务将不会启动
-# If not configured, encrypted DNS services will not start
-# tls_cert_path = "/path/to/cert.pem"
-
-# TLS 私钥文件路径
-# TLS private key file path
-# tls_key_path = "/path/to/key.pem"
+#
+# 注意: 环境变量优先级高于配置文件
+# Note: Environment variables take priority over config file
+#
+# 以下配置通过 Web 管理界面管理，无需在此配置:
+# The following are managed via Web UI, no need to configure here:
+# - DNS 监听器 (端口、绑定地址、TLS 证书)
+# - 上游 DNS 服务器
+# - 缓存设置
+# - 查询策略
 
 # =============================================================================
 # 数据库配置 (Database Configuration)
 # =============================================================================
 
-# SQLite 数据库连接 URL
-# SQLite database connection URL
-# 默认值: "sqlite:dns_proxy.db?mode=rwc"
-# mode=rwc 表示读写模式，如果文件不存在则创建
-# mode=rwc means read-write mode, create if not exists
-database_url = "sqlite:dns_proxy.db?mode=rwc"
+# SQLite 数据库文件路径
+# SQLite database file path
+database_url = "sqlite:fluxdns.db?mode=rwc"
+
+# =============================================================================
+# Web 管理界面配置 (Web Management Interface)
+# =============================================================================
+
+# Web 服务端口
+# Web service port
+web_port = 8080
 
 # =============================================================================
 # 认证配置 (Authentication Configuration)
@@ -73,12 +36,10 @@ database_url = "sqlite:dns_proxy.db?mode=rwc"
 
 # 管理员用户名
 # Admin username
-# 默认值: "admin"
 admin_username = "admin"
 
 # 管理员密码 (生产环境请务必修改!)
 # Admin password (MUST change in production!)
-# 默认值: "admin"
 admin_password = "admin"
 
 # =============================================================================
@@ -87,12 +48,10 @@ admin_password = "admin"
 
 # 日志文件存储目录
 # Log file storage directory
-# 默认值: "logs"
 log_path = "logs"
 
 # 日志级别: trace, debug, info, warn, error
 # Log level: trace, debug, info, warn, error
-# 默认值: "info"
 log_level = "info"
 
 # 单个日志文件最大大小 (字节)
@@ -102,37 +61,4 @@ log_max_size = 10485760
 
 # 日志保留天数
 # Log retention days
-# 默认值: 30
 log_retention_days = 30
-
-# =============================================================================
-# 缓存配置 (Cache Configuration)
-# =============================================================================
-
-# 缓存默认 TTL (秒)
-# Cache default TTL (seconds)
-# 默认值: 60
-cache_ttl = 60
-
-# 缓存最大条目数
-# Maximum cache entries
-# 默认值: 10000
-cache_max_entries = 10000
-
-# =============================================================================
-# 上游 DNS 服务器配置 (Upstream DNS Server Configuration)
-# =============================================================================
-
-# 上游 DNS 服务器列表
-# Upstream DNS server list
-# 格式: "IP:PORT" 或 DNS URL
-# Format: "IP:PORT" or DNS URL
-# 默认值: ["8.8.8.8:53", "8.8.4.4:53"]
-upstream_servers = [
-    "8.8.8.8:53",      # Google Public DNS
-    "8.8.4.4:53",      # Google Public DNS (备用)
-    # "1.1.1.1:53",    # Cloudflare DNS
-    # "1.0.0.1:53",    # Cloudflare DNS (备用)
-    # "9.9.9.9:53",    # Quad9 DNS
-    # "208.67.222.222:53", # OpenDNS
-]

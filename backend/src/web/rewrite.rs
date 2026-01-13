@@ -471,7 +471,7 @@ pub async fn reload_rules(
 
 /// Build the rewrite rules API router
 pub fn rewrite_router(state: RewriteState) -> axum::Router {
-    use axum::routing::{delete, get, post, put};
+    use axum::routing::{get, post};
 
     axum::Router::new()
         .route("/", get(list_rules).post(create_rule))

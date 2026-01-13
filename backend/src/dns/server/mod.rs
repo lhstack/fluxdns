@@ -15,6 +15,8 @@ mod doq;
 mod protocol_consistency_tests;
 
 pub use udp::*;
+#[allow(unused_imports)]
 pub use dot::*;
 pub use doh::*;
+#[allow(unused_imports)]
 pub use doq::*;

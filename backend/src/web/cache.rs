@@ -130,6 +130,7 @@ impl UpdateCacheConfigRequest {
 
 /// Clear cache request for specific domain
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct ClearDomainRequest {
     pub domain: String,
 }
@@ -248,7 +249,7 @@ pub async fn cleanup_cache(
 
 /// Build the cache API router
 pub fn cache_router(state: CacheState) -> axum::Router {
-    use axum::routing::{get, post, put};
+    use axum::routing::{get, post};
 
     axum::Router::new()
         .route("/stats", get(cache_stats))

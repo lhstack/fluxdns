@@ -83,6 +83,7 @@ impl AuthService {
     }
 
     /// Create AuthService with a custom secret key (for testing)
+    #[allow(dead_code)]
     pub fn with_secret(config: Arc<ConfigManager>, secret: &str) -> Self {
         Self {
             config,

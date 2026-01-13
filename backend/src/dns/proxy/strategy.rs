@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::dns::message::DnsQuery;
-use super::client::{create_client, DnsClient, QueryResult};
+use super::client::{create_client, QueryResult};
 use super::upstream::{UpstreamManager, UpstreamServer};
 
 /// Query strategy types
@@ -223,8 +223,10 @@ impl ProxyManager {
             .ok_or_else(|| anyhow!("No healthy upstream servers available"))?;
 
         info!(
-            "[Fastest] Selected server: {} (avg response time: {}ms)",
+            "[Fastest] Selected server: {},addr: {},protocol: {} (avg response time: {}ms)",
             server.name,
+            server.address,
+            server.protocol,
             self.upstream_manager.get_stats(server.id).await
                 .map(|s| s.avg_response_time_ms())
                 .unwrap_or(0)

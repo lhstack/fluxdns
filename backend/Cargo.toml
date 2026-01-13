@@ -1,9 +1,9 @@
 [package]
-name = "dns-proxy-service"
+name = "fluxdns"
 version = "0.1.0"
 edition = "2021"
-description = "A DNS proxy service with web management interface"
-authors = ["DNS Proxy Team"]
+description = "FluxDNS - A modern DNS proxy service with multi-protocol support"
+authors = ["FluxDNS Team"]
 
 [dependencies]
 # Web framework

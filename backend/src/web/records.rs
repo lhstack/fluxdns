@@ -159,6 +159,7 @@ fn validate_value(value: &str, record_type: &str) -> Result<(), String> {
 }
 
 /// Validate TTL value
+#[allow(unused_comparisons)]
 fn validate_ttl(ttl: i32) -> Result<(), String> {
     if ttl < 0 {
         return Err("TTL cannot be negative".to_string());
@@ -471,7 +472,7 @@ pub async fn delete_record(
 
 /// Build the records API router
 pub fn records_router(state: RecordsState) -> axum::Router {
-    use axum::routing::{delete, get, post, put};
+    use axum::routing::get;
     
     axum::Router::new()
         .route("/", get(list_records).post(create_record))

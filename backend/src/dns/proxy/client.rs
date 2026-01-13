@@ -34,9 +34,11 @@ pub trait DnsClient: Send + Sync {
     async fn query(&self, query: &DnsQuery) -> Result<QueryResult>;
     
     /// Get the server this client is connected to
+    #[allow(dead_code)]
     fn server(&self) -> &UpstreamServer;
     
     /// Check if the server is reachable (health check)
+    #[allow(dead_code)]
     async fn health_check(&self) -> Result<Duration>;
 }
 
@@ -45,6 +47,7 @@ pub trait DnsClient: Send + Sync {
 /// Queries upstream DNS servers using standard UDP protocol.
 pub struct UdpDnsClient {
     server: UpstreamServer,
+    #[allow(dead_code)]
     socket: Option<UdpSocket>,
 }
 
@@ -436,23 +439,10 @@ impl DnsClient for DoqDnsClient {
         // Create QUIC client config
         let mut root_store = RootCertStore::empty();
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        
-        // Check if SNI is an IP address
-        let is_ip = sni_host.parse::<std::net::IpAddr>().is_ok();
-        
-        let mut crypto = if is_ip {
-            // For IP addresses, we need to skip certificate verification
-            // This is less secure but necessary for IP-based DoQ servers
-            let config = rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(NoVerifier))
-                .with_no_client_auth();
-            config
-        } else {
-            rustls::ClientConfig::builder()
-                .with_root_certificates(root_store.clone())
-                .with_no_client_auth()
-        };
+        let mut crypto = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerifier))
+            .with_no_client_auth();
         
         // Set ALPN protocol for DoQ (RFC 9250)
         crypto.alpn_protocols = vec![b"doq".to_vec()];
@@ -474,10 +464,12 @@ impl DnsClient for DoqDnsClient {
         
         let start = Instant::now();
         
-        // Use the host directly as SNI (IP or hostname)
-        // For IP addresses, we use "dns" as a placeholder SNI since rustls requires a valid hostname
-        let connect_sni = if is_ip { "dns" } else { sni_host.as_str() };
-        debug!("DoQ using SNI: {} (original: {}, is_ip: {})", connect_sni, sni_host, is_ip);
+        // For IP addresses, quinn's connect() requires a valid DNS name for SNI.
+        // We use a placeholder domain "dns" since we're skipping certificate verification anyway.
+        // This is how AdGuard dnsproxy handles IP-based DoQ connections - it uses InsecureSkipVerify
+        // and doesn't rely on SNI for certificate validation.
+        let connect_sni = sni_host.as_str();
+        debug!("DoQ using SNI: {}", connect_sni);
         
         // Connect with timeout
         let connection = timeout(

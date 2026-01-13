@@ -2,6 +2,8 @@
 //!
 //! Implements a DNS server over TLS protocol (port 853).
 
+#![allow(dead_code)]
+
 use std::fs::File;
 use std::io::BufReader;
 use std::net::SocketAddr;
@@ -9,7 +11,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use rustls::ServerConfig;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::pki_types::CertificateDer;
 use rustls_pemfile::{certs, private_key};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
