@@ -20,8 +20,9 @@ export default defineConfig({
     }
   },
   build: {
-    outDir: 'dist',
+    outDir: '../backend/dist',
     assetsDir: 'assets',
-    sourcemap: false
+    sourcemap: false,
+    emptyOutDir: true
   }
 })

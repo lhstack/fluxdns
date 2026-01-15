@@ -139,11 +139,12 @@ impl ProxyManager {
         result
     }
 
-    /// Query all servers concurrently, return first successful response
+    /// Query all servers concurrently, return first successful response and cancel others
     async fn query_concurrent(&self, query: &DnsQuery, trace_id: &str) -> Result<QueryResult> {
         use tracing::{debug, info, warn};
         use crate::dns::message::DnsResponseCode;
-        use tokio::sync::mpsc;
+        use tokio::select;
+        use tokio_util::sync::CancellationToken;
         
         let servers = self.upstream_manager.get_healthy_servers().await;
         
@@ -156,57 +157,75 @@ impl ProxyManager {
             .collect();
         info!("[{}] [Concurrent] Querying {} servers: {}", trace_id, servers.len(), server_info.join(", "));
 
-        let server_count = servers.len();
-        let (tx, mut rx) = mpsc::channel::<Result<QueryResult>>(server_count);
+        // Create cancellation token for all tasks
+        let cancel_token = CancellationToken::new();
+        let mut handles = Vec::with_capacity(servers.len());
 
         // Spawn concurrent queries to all servers
         for server in servers {
-            let tx = tx.clone();
             let q = query.clone();
             let tid = trace_id.to_string();
             let server_name = server.name.clone();
             let server_addr = server.address.clone();
             let protocol = server.protocol;
+            let token = cancel_token.clone();
             
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 debug!("[{}] [Concurrent] Starting query to {} ({}) via {}", tid, server_name, server_addr, protocol);
-                let client = create_client(server);
-                let result = client.query(&q).await;
                 
-                // Log individual server result
-                match &result {
-                    Ok(r) => info!(
-                        "[{}] [Concurrent] {} responded: {} in {}ms", 
-                        tid, server_name, r.response.response_code, r.response_time_ms
-                    ),
-                    Err(e) => warn!("[{}] [Concurrent] {} failed: {}", tid, server_name, e),
+                select! {
+                    _ = token.cancelled() => {
+                        debug!("[{}] [Concurrent] Query to {} cancelled", tid, server_name);
+                        Err(anyhow!("Query cancelled"))
+                    }
+                    result = async {
+                        let client = create_client(server);
+                        client.query(&q).await
+                    } => {
+                        // Log individual server result
+                        match &result {
+                            Ok(r) => info!(
+                                "[{}] [Concurrent] {} responded: {} in {}ms", 
+                                tid, server_name, r.response.response_code, r.response_time_ms
+                            ),
+                            Err(e) => warn!("[{}] [Concurrent] {} failed: {}", tid, server_name, e),
+                        }
+                        result
+                    }
                 }
-                
-                let _ = tx.send(result).await;
             });
+            handles.push(handle);
         }
-        
-        // Drop the original sender so rx will close when all spawned tasks complete
-        drop(tx);
 
         let mut last_error: Option<String> = None;
-        let mut received_count = 0;
 
-        // Return the first successful response
-        while let Some(result) = rx.recv().await {
-            received_count += 1;
+        // Use select to get the first successful response
+        loop {
+            if handles.is_empty() {
+                break;
+            }
+
+            // Wait for any task to complete
+            let (result, _index, remaining) = futures::future::select_all(handles).await;
+            handles = remaining;
+
             match result {
-                Ok(query_result) => {
+                Ok(Ok(query_result)) => {
                     let response_code = &query_result.response.response_code;
                     // Accept NoError and NxDomain as valid responses
                     if *response_code == DnsResponseCode::NoError || *response_code == DnsResponseCode::NxDomain {
                         info!(
-                            "[{}] [Concurrent] Winner: {} ({}ms) - {} answers",
+                            "[{}] [Concurrent] Winner: {} ({}ms) - {} answers, cancelling {} remaining queries",
                             trace_id,
                             query_result.server_name, 
                             query_result.response_time_ms,
-                            query_result.response.answers.len()
+                            query_result.response.answers.len(),
+                            handles.len()
                         );
+                        
+                        // Cancel all remaining queries
+                        cancel_token.cancel();
+                        
                         // Record success
                         self.upstream_manager
                             .record_success(query_result.server_id, query_result.response_time_ms)
@@ -221,23 +240,42 @@ impl ProxyManager {
                         last_error = Some(format!("{} returned {}", query_result.server_name, response_code));
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     last_error = Some(e.to_string());
+                }
+                Err(e) => {
+                    last_error = Some(format!("Task panicked: {}", e));
                 }
             }
         }
 
-        Err(anyhow!("All {} upstream servers failed: {}", 
-            received_count, 
+        Err(anyhow!("All upstream servers failed: {}", 
             last_error.unwrap_or_else(|| "unknown error".to_string())))
     }
 
     /// Query the fastest server based on historical response times
+    /// Falls back to concurrent strategy if no historical data exists
     async fn query_fastest(&self, query: &DnsQuery, trace_id: &str) -> Result<QueryResult> {
         use tracing::info;
         
+        // Check if we have any historical data
+        let has_stats = self.upstream_manager.has_any_stats().await;
+        
+        if !has_stats {
+            // No historical data - use concurrent strategy to probe all servers
+            info!(
+                "[{}] [Fastest] No historical data, falling back to concurrent strategy for initial probe",
+                trace_id
+            );
+            return self.query_concurrent(query, trace_id).await;
+        }
+        
         let server = self.upstream_manager.get_fastest_server().await
             .ok_or_else(|| anyhow!("No healthy upstream servers available"))?;
+
+        let avg_time = self.upstream_manager.get_stats(server.id).await
+            .map(|s| s.avg_response_time_ms())
+            .unwrap_or(0);
 
         info!(
             "[{}] [Fastest] Selected server: {}, addr: {}, protocol: {} (avg response time: {}ms)",
@@ -245,9 +283,7 @@ impl ProxyManager {
             server.name,
             server.address,
             server.protocol,
-            self.upstream_manager.get_stats(server.id).await
-                .map(|s| s.avg_response_time_ms())
-                .unwrap_or(0)
+            avg_time
         );
 
         self.query_server(server, query, trace_id).await

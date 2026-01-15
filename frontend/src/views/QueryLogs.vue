@@ -42,7 +42,7 @@
           />
         </el-form-item>
         <el-form-item label="类型">
-          <el-select v-model="filters.query_type" placeholder="全部" clearable>
+          <el-select v-model="filters.query_type" placeholder="全部" clearable style="width: 120px">
             <el-option
               v-for="type in recordTypes"
               :key="type"
@@ -60,7 +60,7 @@
           />
         </el-form-item>
         <el-form-item label="缓存命中">
-          <el-select v-model="filters.cache_hit" placeholder="全部" clearable>
+          <el-select v-model="filters.cache_hit" placeholder="全部" clearable style="width: 120px">
             <el-option label="是" :value="true" />
             <el-option label="否" :value="false" />
           </el-select>
@@ -171,7 +171,7 @@ const stats = ref<QueryStats>({
 
 const filters = reactive({
   query_name: '',
-  query_type: '',
+  query_type: null as string | null,
   client_ip: '',
   cache_hit: null as boolean | null
 })
@@ -231,7 +231,7 @@ async function fetchStats() {
 
 function resetFilters() {
   filters.query_name = ''
-  filters.query_type = ''
+  filters.query_type = null
   filters.client_ip = ''
   filters.cache_hit = null
   currentPage.value = 1

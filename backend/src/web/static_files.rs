@@ -15,7 +15,7 @@ use rust_embed::RustEmbed;
 
 /// Embedded frontend assets
 #[derive(RustEmbed)]
-#[folder = "../frontend/dist"]
+#[folder = "dist"]
 pub struct Assets;
 
 /// Serve static files from embedded assets

@@ -41,7 +41,7 @@ RUN addgroup -g 1000 fluxdns && \
 WORKDIR /app
 
 # 复制二进制文件
-COPY --from=builder /app/target/release/dns-proxy-service /app/fluxdns
+COPY --from=builder /app/target/release/fluxdns /app/fluxdns
 
 # 创建数据目录并设置权限
 RUN mkdir -p /app/data /app/logs && \

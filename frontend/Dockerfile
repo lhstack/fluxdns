@@ -13,7 +13,10 @@ RUN apk add --no-cache tzdata && \
 # 安装 pnpm
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
-WORKDIR /app
+WORKDIR /app/frontend
+
+# 创建 backend/dist 目录供 vite 输出
+RUN mkdir -p /app/backend/dist
 
 # 复制依赖文件
 COPY package.json pnpm-lock.yaml ./
@@ -27,4 +30,4 @@ RUN pnpm build
 
 # 输出阶段 - 仅保留构建产物
 FROM scratch AS export
-COPY --from=builder /app/dist /dist
+COPY --from=builder /app/backend/dist /dist

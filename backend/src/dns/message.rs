@@ -9,9 +9,9 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use trust_dns_proto::op::{Message, MessageType, OpCode, ResponseCode};
-use trust_dns_proto::rr::{DNSClass, Name, RData, Record, RecordType as TrustRecordType};
-use trust_dns_proto::serialize::binary::{BinDecodable, BinEncodable};
+use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
+use hickory_proto::rr::{Name, RData, Record, RecordType as TrustRecordType};
+use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 
 /// DNS-specific errors
 #[derive(Error, Debug)]
@@ -198,7 +198,7 @@ impl DnsQuery {
         message.set_recursion_desired(self.recursion_desired);
 
         message.add_query(
-            trust_dns_proto::op::Query::query(name, self.record_type.to_trust_dns())
+            hickory_proto::op::Query::query(name, self.record_type.to_trust_dns())
         );
 
         message
@@ -499,7 +499,7 @@ impl DnsResponse {
 
         // Add the original query
         message.add_query(
-            trust_dns_proto::op::Query::query(query_name, query.record_type.to_trust_dns())
+            hickory_proto::op::Query::query(query_name, query.record_type.to_trust_dns())
         );
 
         // Add answer records
@@ -530,41 +530,41 @@ impl DnsResponse {
 }
 
 
-/// Convert a trust-dns Record to DnsRecordData
+/// Convert a hickory-proto Record to DnsRecordData
 fn record_to_data(record: &Record) -> Option<DnsRecordData> {
     let name = record.name().to_string().trim_end_matches('.').to_string();
     let ttl = record.ttl();
 
     match record.data() {
-        Some(RData::A(ip)) => Some(DnsRecordData {
+        RData::A(ip) => Some(DnsRecordData {
             name,
             record_type: RecordType::A,
             value: ip.to_string(),
             ttl,
             priority: None,
         }),
-        Some(RData::AAAA(ip)) => Some(DnsRecordData {
+        RData::AAAA(ip) => Some(DnsRecordData {
             name,
             record_type: RecordType::AAAA,
             value: ip.to_string(),
             ttl,
             priority: None,
         }),
-        Some(RData::CNAME(cname)) => Some(DnsRecordData {
+        RData::CNAME(cname) => Some(DnsRecordData {
             name,
             record_type: RecordType::CNAME,
             value: cname.to_string().trim_end_matches('.').to_string(),
             ttl,
             priority: None,
         }),
-        Some(RData::MX(mx)) => Some(DnsRecordData {
+        RData::MX(mx) => Some(DnsRecordData {
             name,
             record_type: RecordType::MX,
             value: mx.exchange().to_string().trim_end_matches('.').to_string(),
             ttl,
             priority: Some(mx.preference()),
         }),
-        Some(RData::TXT(txt)) => {
+        RData::TXT(txt) => {
             let text: String = txt
                 .txt_data()
                 .iter()
@@ -579,21 +579,21 @@ fn record_to_data(record: &Record) -> Option<DnsRecordData> {
                 priority: None,
             })
         }
-        Some(RData::PTR(ptr)) => Some(DnsRecordData {
+        RData::PTR(ptr) => Some(DnsRecordData {
             name,
             record_type: RecordType::PTR,
             value: ptr.to_string().trim_end_matches('.').to_string(),
             ttl,
             priority: None,
         }),
-        Some(RData::NS(ns)) => Some(DnsRecordData {
+        RData::NS(ns) => Some(DnsRecordData {
             name,
             record_type: RecordType::NS,
             value: ns.to_string().trim_end_matches('.').to_string(),
             ttl,
             priority: None,
         }),
-        Some(RData::SOA(soa)) => {
+        RData::SOA(soa) => {
             let value = format!(
                 "{} {} {} {} {} {} {}",
                 soa.mname().to_string().trim_end_matches('.'),
@@ -612,7 +612,7 @@ fn record_to_data(record: &Record) -> Option<DnsRecordData> {
                 priority: None,
             })
         }
-        Some(RData::SRV(srv)) => {
+        RData::SRV(srv) => {
             let value = format!(
                 "{} {} {}",
                 srv.weight(),
@@ -631,7 +631,7 @@ fn record_to_data(record: &Record) -> Option<DnsRecordData> {
     }
 }
 
-/// Convert DnsRecordData to a trust-dns Record
+/// Convert DnsRecordData to a hickory-proto Record
 fn data_to_record(data: &DnsRecordData) -> Option<Record> {
     let name = Name::from_str(&data.name).ok()?;
 
@@ -646,23 +646,23 @@ fn data_to_record(data: &DnsRecordData) -> Option<Record> {
         }
         RecordType::CNAME => {
             let target = Name::from_str(&data.value).ok()?;
-            RData::CNAME(trust_dns_proto::rr::rdata::CNAME(target))
+            RData::CNAME(hickory_proto::rr::rdata::CNAME(target))
         }
         RecordType::MX => {
             let exchange = Name::from_str(&data.value).ok()?;
             let priority = data.priority.unwrap_or(10);
-            RData::MX(trust_dns_proto::rr::rdata::MX::new(priority, exchange))
+            RData::MX(hickory_proto::rr::rdata::MX::new(priority, exchange))
         }
         RecordType::TXT => {
-            RData::TXT(trust_dns_proto::rr::rdata::TXT::new(vec![data.value.clone()]))
+            RData::TXT(hickory_proto::rr::rdata::TXT::new(vec![data.value.clone()]))
         }
         RecordType::PTR => {
             let target = Name::from_str(&data.value).ok()?;
-            RData::PTR(trust_dns_proto::rr::rdata::PTR(target))
+            RData::PTR(hickory_proto::rr::rdata::PTR(target))
         }
         RecordType::NS => {
             let ns = Name::from_str(&data.value).ok()?;
-            RData::NS(trust_dns_proto::rr::rdata::NS(ns))
+            RData::NS(hickory_proto::rr::rdata::NS(ns))
         }
         RecordType::SOA => {
             // Parse SOA format: "mname rname serial refresh retry expire minimum"
@@ -677,7 +677,7 @@ fn data_to_record(data: &DnsRecordData) -> Option<Record> {
             let retry: i32 = parts[4].parse().ok()?;
             let expire: i32 = parts[5].parse().ok()?;
             let minimum: u32 = parts[6].parse().ok()?;
-            RData::SOA(trust_dns_proto::rr::rdata::SOA::new(
+            RData::SOA(hickory_proto::rr::rdata::SOA::new(
                 mname, rname, serial, refresh, retry, expire, minimum,
             ))
         }
@@ -691,20 +691,13 @@ fn data_to_record(data: &DnsRecordData) -> Option<Record> {
             let port: u16 = parts[1].parse().ok()?;
             let target = Name::from_str(parts[2]).ok()?;
             let priority = data.priority.unwrap_or(0);
-            RData::SRV(trust_dns_proto::rr::rdata::SRV::new(
+            RData::SRV(hickory_proto::rr::rdata::SRV::new(
                 priority, weight, port, target,
             ))
         }
     };
 
-    let mut record = Record::new();
-    record.set_name(name);
-    record.set_rr_type(data.record_type.to_trust_dns());
-    record.set_dns_class(DNSClass::IN);
-    record.set_ttl(data.ttl);
-    record.set_data(Some(rdata));
-
-    Some(record)
+    Some(Record::from_rdata(name, data.ttl, rdata))
 }
 
 #[cfg(test)]

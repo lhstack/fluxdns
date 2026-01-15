@@ -3,7 +3,7 @@ name = "fluxdns"
 version = "0.1.0"
 edition = "2021"
 description = "FluxDNS - A modern DNS proxy service with multi-protocol support"
-authors = ["FluxDNS Team"]
+authors = ["lhstack@foxmail.com"]
 
 [dependencies]
 # Web framework
@@ -18,7 +18,7 @@ tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "chrono"] }
 
 # DNS protocol
-trust-dns-proto = "0.23"
+hickory-proto = "0.25.1"
 
 # QUIC support
 quinn = "0.11"
@@ -77,6 +77,7 @@ rand = "0.8"
 
 # Async utilities
 futures = "0.3"
+tokio-util = "0.7"
 
 [dev-dependencies]
 proptest = "1"
@@ -84,5 +85,5 @@ tokio-test = "0.4"
 tempfile = "3"
 
 [[bin]]
-name = "dns-proxy-service"
+name = "fluxdns"
 path = "src/main.rs"

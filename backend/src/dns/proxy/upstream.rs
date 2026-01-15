@@ -127,7 +127,7 @@ impl UpstreamServer {
 }
 
 /// Statistics for an upstream server
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpstreamStats {
     /// Total number of queries sent
     pub queries: u64,
@@ -135,10 +135,13 @@ pub struct UpstreamStats {
     pub successes: u64,
     /// Number of failures (timeouts, errors)
     pub failures: u64,
-    /// Total response time in milliseconds
-    pub total_response_time_ms: u64,
+    /// Exponential moving average of response time (ms)
+    pub ema_response_time_ms: f64,
     /// Last response time in milliseconds
     pub last_response_time_ms: Option<u64>,
+    /// Recent response times for sliding window (max 10)
+    #[serde(skip)]
+    recent_response_times: Vec<u64>,
     /// Last successful query time (not serialized)
     #[serde(skip)]
     pub last_success: Option<Instant>,
@@ -149,7 +152,29 @@ pub struct UpstreamStats {
     pub healthy: bool,
 }
 
+impl Default for UpstreamStats {
+    fn default() -> Self {
+        Self {
+            queries: 0,
+            successes: 0,
+            failures: 0,
+            ema_response_time_ms: 0.0,
+            last_response_time_ms: None,
+            recent_response_times: Vec::with_capacity(10),
+            last_success: None,
+            last_failure: None,
+            healthy: true,
+        }
+    }
+}
+
 impl UpstreamStats {
+    /// EMA smoothing factor (0.3 = recent values have ~30% weight)
+    /// Higher value = more responsive to recent changes
+    const EMA_ALPHA: f64 = 0.3;
+    /// Maximum recent samples to keep
+    const MAX_RECENT_SAMPLES: usize = 10;
+
     /// Create new stats with healthy status
     pub fn new() -> Self {
         Self {
@@ -158,12 +183,12 @@ impl UpstreamStats {
         }
     }
 
-    /// Calculate average response time in milliseconds
+    /// Get the effective average response time (EMA-based)
     pub fn avg_response_time_ms(&self) -> u64 {
         if self.successes == 0 {
-            0
+            u64::MAX // No data = worst priority
         } else {
-            self.total_response_time_ms / self.successes
+            self.ema_response_time_ms.round() as u64
         }
     }
 
@@ -176,14 +201,30 @@ impl UpstreamStats {
         }
     }
 
-    /// Record a successful query
+    /// Record a successful query with EMA update
     pub fn record_success(&mut self, response_time_ms: u64) {
         self.queries += 1;
         self.successes += 1;
-        self.total_response_time_ms += response_time_ms;
         self.last_response_time_ms = Some(response_time_ms);
         self.last_success = Some(Instant::now());
         self.healthy = true;
+
+        // Update sliding window
+        if self.recent_response_times.len() >= Self::MAX_RECENT_SAMPLES {
+            self.recent_response_times.remove(0);
+        }
+        self.recent_response_times.push(response_time_ms);
+
+        // Update EMA
+        let new_value = response_time_ms as f64;
+        if self.successes == 1 {
+            // First sample: initialize EMA
+            self.ema_response_time_ms = new_value;
+        } else {
+            // EMA formula: new_ema = alpha * new_value + (1 - alpha) * old_ema
+            self.ema_response_time_ms = Self::EMA_ALPHA * new_value 
+                + (1.0 - Self::EMA_ALPHA) * self.ema_response_time_ms;
+        }
     }
 
     /// Record a failed query
@@ -206,6 +247,11 @@ impl UpstreamStats {
     /// Reset health status (for manual recovery)
     pub fn reset_health(&mut self) {
         self.healthy = true;
+    }
+
+    /// Get recent response times for debugging
+    pub fn recent_times(&self) -> &[u64] {
+        &self.recent_response_times
     }
 }
 
@@ -400,6 +446,12 @@ impl UpstreamManager {
                     .map(|st| st.avg_response_time_ms())
                     .unwrap_or(u64::MAX)
             })
+    }
+
+    /// Check if any server has historical stats (at least one successful query)
+    pub async fn has_any_stats(&self) -> bool {
+        let stats = self.stats.read().await;
+        stats.values().any(|s| s.successes > 0)
     }
 
     /// Get the number of servers
