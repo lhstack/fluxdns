@@ -40,10 +40,10 @@ pub struct StrategyResponse {
 impl From<QueryStrategy> for StrategyResponse {
     fn from(strategy: QueryStrategy) -> Self {
         let description = match strategy {
-            QueryStrategy::Concurrent => "Query all servers simultaneously, return first response",
-            QueryStrategy::Fastest => "Use the server with the best historical response time",
-            QueryStrategy::RoundRobin => "Rotate through servers sequentially",
-            QueryStrategy::Random => "Select a random server for each query",
+            QueryStrategy::Concurrent => "并发查询所有上游服务器，返回最快响应并取消其他请求",
+            QueryStrategy::Fastest => "基于历史响应时间选择最快的服务器（首次查询自动使用并发策略探测）",
+            QueryStrategy::RoundRobin => "按顺序轮流使用每个上游服务器",
+            QueryStrategy::Random => "每次查询随机选择一个上游服务器",
         };
         Self {
             strategy: strategy.as_str().to_string(),
@@ -162,19 +162,19 @@ pub async fn get_available_strategies() -> Result<impl IntoResponse, ApiError> {
     let strategies = vec![
         StrategyInfo {
             name: "concurrent".to_string(),
-            description: "Query all servers simultaneously, return first response".to_string(),
+            description: "并发查询所有上游服务器，返回最快响应并取消其他请求".to_string(),
         },
         StrategyInfo {
             name: "fastest".to_string(),
-            description: "Use the server with the best historical response time".to_string(),
+            description: "基于历史响应时间选择最快的服务器（首次查询自动使用并发策略探测）".to_string(),
         },
         StrategyInfo {
             name: "round_robin".to_string(),
-            description: "Rotate through servers sequentially".to_string(),
+            description: "按顺序轮流使用每个上游服务器".to_string(),
         },
         StrategyInfo {
             name: "random".to_string(),
-            description: "Select a random server for each query".to_string(),
+            description: "每次查询随机选择一个上游服务器".to_string(),
         },
     ];
 
