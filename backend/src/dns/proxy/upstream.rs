@@ -186,7 +186,16 @@ impl UpstreamStats {
     /// Get the effective average response time (EMA-based)
     pub fn avg_response_time_ms(&self) -> u64 {
         if self.successes == 0 {
-            u64::MAX // No data = worst priority
+            0 // No data yet
+        } else {
+            self.ema_response_time_ms.round() as u64
+        }
+    }
+
+    /// Get the effective average response time for sorting (returns MAX if no data)
+    pub fn avg_response_time_for_sorting(&self) -> u64 {
+        if self.successes == 0 {
+            u64::MAX // No data = worst priority for sorting
         } else {
             self.ema_response_time_ms.round() as u64
         }
@@ -443,7 +452,7 @@ impl UpstreamManager {
             .min_by_key(|s| {
                 stats
                     .get(&s.id)
-                    .map(|st| st.avg_response_time_ms())
+                    .map(|st| st.avg_response_time_for_sorting())
                     .unwrap_or(u64::MAX)
             })
     }
@@ -452,6 +461,49 @@ impl UpstreamManager {
     pub async fn has_any_stats(&self) -> bool {
         let stats = self.stats.read().await;
         stats.values().any(|s| s.successes > 0)
+    }
+
+    /// Check if all healthy servers have historical stats
+    pub async fn all_servers_have_stats(&self) -> bool {
+        let servers = self.get_healthy_servers().await;
+        if servers.is_empty() {
+            return false;
+        }
+        
+        let stats = self.stats.read().await;
+        servers.iter().all(|s| {
+            stats.get(&s.id).map(|st| st.successes > 0).unwrap_or(false)
+        })
+    }
+
+    /// Check if any healthy server needs re-probing
+    /// Returns true if:
+    /// - Any server has no stats
+    /// - Any server hasn't been queried in the last 5 minutes
+    pub async fn needs_reprobe(&self) -> bool {
+        let servers = self.get_healthy_servers().await;
+        if servers.is_empty() {
+            return false;
+        }
+        
+        let stats = self.stats.read().await;
+        let reprobe_threshold = Duration::from_secs(300); // 5 minutes
+        
+        servers.iter().any(|s| {
+            match stats.get(&s.id) {
+                None => true, // No stats at all
+                Some(st) => {
+                    if st.successes == 0 {
+                        return true; // Never succeeded
+                    }
+                    // Check if last success was too long ago
+                    match st.last_success {
+                        None => true,
+                        Some(last) => last.elapsed() > reprobe_threshold,
+                    }
+                }
+            }
+        })
     }
 
     /// Get the number of servers

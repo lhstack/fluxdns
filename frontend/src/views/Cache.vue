@@ -1,61 +1,91 @@
 <template>
   <div class="cache-management">
-    <h1>缓存管理</h1>
+    <!-- 页面标题 -->
+    <div class="page-header">
+      <div class="header-left">
+        <h1>缓存管理</h1>
+        <p class="subtitle">管理 DNS 缓存，查看统计信息，配置缓存策略</p>
+      </div>
+      <el-button type="primary" size="large" @click="fetchStats">
+        <el-icon><Refresh /></el-icon>
+        刷新统计
+      </el-button>
+    </div>
+
+    <!-- 统计卡片 -->
+    <el-row :gutter="20" class="stats-row">
+      <el-col :xs="12" :sm="6">
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <el-icon><Box /></el-icon>
+          </div>
+          <div class="stat-info">
+            <span class="stat-value">{{ stats.entries }}</span>
+            <span class="stat-label">缓存条目</span>
+          </div>
+        </div>
+      </el-col>
+      <el-col :xs="12" :sm="6">
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
+            <el-icon><CircleCheck /></el-icon>
+          </div>
+          <div class="stat-info">
+            <span class="stat-value">{{ stats.hits }}</span>
+            <span class="stat-label">命中次数</span>
+          </div>
+        </div>
+      </el-col>
+      <el-col :xs="12" :sm="6">
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #f5576c 0%, #f093fb 100%);">
+            <el-icon><CircleClose /></el-icon>
+          </div>
+          <div class="stat-info">
+            <span class="stat-value">{{ stats.misses }}</span>
+            <span class="stat-label">未命中次数</span>
+          </div>
+        </div>
+      </el-col>
+      <el-col :xs="12" :sm="6">
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+            <el-icon><TrendCharts /></el-icon>
+          </div>
+          <div class="stat-info">
+            <span class="stat-value">{{ formatHitRate(stats.hit_rate * 100) }}</span>
+            <span class="stat-label">命中率</span>
+          </div>
+        </div>
+      </el-col>
+    </el-row>
 
     <el-row :gutter="20">
-      <!-- Cache Statistics -->
-      <el-col :span="12">
-        <el-card>
+      <!-- 缓存配置 -->
+      <el-col :xs="24" :md="12">
+        <el-card class="config-card" shadow="never">
           <template #header>
-            <div class="card-header">
-              <span>缓存统计</span>
-              <el-button type="primary" link @click="fetchStats">
-                <el-icon><Refresh /></el-icon>
-                刷新
-              </el-button>
+            <div class="card-title">
+              <el-icon><Setting /></el-icon>
+              <span>缓存配置</span>
             </div>
-          </template>
-          <el-descriptions :column="1" border v-loading="loadingStats">
-            <el-descriptions-item label="缓存条目">
-              {{ stats.entries }}
-            </el-descriptions-item>
-            <el-descriptions-item label="命中次数">
-              {{ stats.hits }}
-            </el-descriptions-item>
-            <el-descriptions-item label="未命中次数">
-              {{ stats.misses }}
-            </el-descriptions-item>
-            <el-descriptions-item label="命中率">
-              <el-progress
-                :percentage="stats.hit_rate * 100"
-                :format="formatHitRate"
-                :stroke-width="15"
-              />
-            </el-descriptions-item>
-          </el-descriptions>
-        </el-card>
-      </el-col>
-
-      <!-- Cache Configuration -->
-      <el-col :span="12">
-        <el-card>
-          <template #header>
-            <span>缓存配置</span>
           </template>
           <el-form
             ref="configFormRef"
             :model="configForm"
-            label-width="120px"
+            label-position="top"
             v-loading="loadingConfig"
           >
-            <el-form-item label="默认 TTL">
+            <el-form-item label="默认 TTL（秒）">
               <el-input-number
                 v-model="configForm.default_ttl"
                 :min="1"
                 :max="604800"
                 :step="60"
+                size="large"
+                style="width: 100%"
               />
-              <span class="unit-label">秒</span>
+              <div class="form-tip">缓存条目的默认生存时间，范围 1-604800 秒</div>
             </el-form-item>
             <el-form-item label="最大条目数">
               <el-input-number
@@ -63,64 +93,129 @@
                 :min="1"
                 :max="1000000"
                 :step="1000"
+                size="large"
+                style="width: 100%"
               />
+              <div class="form-tip">缓存可存储的最大条目数量</div>
             </el-form-item>
             <el-form-item>
-              <el-button type="primary" @click="saveConfig" :loading="savingConfig">
+              <el-button type="primary" @click="saveConfig" :loading="savingConfig" size="large">
+                <el-icon><Check /></el-icon>
                 保存配置
               </el-button>
             </el-form-item>
           </el-form>
         </el-card>
       </el-col>
+
+      <!-- 命中率图表 -->
+      <el-col :xs="24" :md="12">
+        <el-card class="chart-card" shadow="never">
+          <template #header>
+            <div class="card-title">
+              <el-icon><PieChart /></el-icon>
+              <span>缓存命中分布</span>
+            </div>
+          </template>
+          <div class="hit-rate-chart">
+            <div class="chart-ring">
+              <el-progress
+                type="circle"
+                :percentage="stats.hit_rate * 100"
+                :width="180"
+                :stroke-width="16"
+                :color="getHitRateColor(stats.hit_rate)"
+              >
+                <template #default>
+                  <div class="chart-center">
+                    <span class="chart-value">{{ formatHitRate(stats.hit_rate * 100) }}</span>
+                    <span class="chart-label">命中率</span>
+                  </div>
+                </template>
+              </el-progress>
+            </div>
+            <div class="chart-legend">
+              <div class="legend-item">
+                <span class="legend-dot" style="background: #67c23a;"></span>
+                <span class="legend-label">命中</span>
+                <span class="legend-value">{{ stats.hits }}</span>
+              </div>
+              <div class="legend-item">
+                <span class="legend-dot" style="background: #f56c6c;"></span>
+                <span class="legend-label">未命中</span>
+                <span class="legend-value">{{ stats.misses }}</span>
+              </div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
     </el-row>
 
-    <!-- Cache Operations -->
-    <el-card class="operations-card">
+    <!-- 缓存操作 -->
+    <el-card class="operations-card" shadow="never">
       <template #header>
-        <span>缓存操作</span>
+        <div class="card-title">
+          <el-icon><Operation /></el-icon>
+          <span>缓存操作</span>
+        </div>
       </template>
-      <el-row :gutter="20">
-        <el-col :span="12">
-          <div class="operation-section">
-            <h4>清除指定域名缓存</h4>
-            <el-input
-              v-model="clearDomain"
-              placeholder="输入域名，如 example.com"
-              class="domain-input"
-            >
-              <template #append>
-                <el-button
-                  type="primary"
-                  @click="clearDomainCache"
-                  :loading="clearingDomain"
-                  :disabled="!clearDomain"
-                >
-                  清除
-                </el-button>
-              </template>
-            </el-input>
+      <el-row :gutter="24">
+        <el-col :xs="24" :md="8">
+          <div class="operation-item">
+            <div class="operation-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+              <el-icon><Search /></el-icon>
+            </div>
+            <div class="operation-content">
+              <h4>清除指定域名缓存</h4>
+              <p>清除特定域名的所有缓存记录</p>
+              <el-input
+                v-model="clearDomain"
+                placeholder="输入域名，如 example.com"
+                size="large"
+                class="operation-input"
+              >
+                <template #append>
+                  <el-button
+                    type="primary"
+                    @click="clearDomainCache"
+                    :loading="clearingDomain"
+                    :disabled="!clearDomain"
+                  >
+                    清除
+                  </el-button>
+                </template>
+              </el-input>
+            </div>
           </div>
         </el-col>
-        <el-col :span="12">
-          <div class="operation-section">
-            <h4>清除全部缓存</h4>
-            <p class="operation-desc">清除所有缓存条目，此操作不可撤销。</p>
-            <el-button type="danger" @click="confirmClearAll" :loading="clearingAll">
-              清除全部缓存
-            </el-button>
+        <el-col :xs="24" :md="8">
+          <div class="operation-item">
+            <div class="operation-icon" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+              <el-icon><Delete /></el-icon>
+            </div>
+            <div class="operation-content">
+              <h4>清除全部缓存</h4>
+              <p>清除所有缓存条目，此操作不可撤销</p>
+              <el-button type="danger" size="large" @click="confirmClearAll" :loading="clearingAll">
+                <el-icon><Delete /></el-icon>
+                清除全部缓存
+              </el-button>
+            </div>
           </div>
         </el-col>
-      </el-row>
-      <el-divider />
-      <el-row>
-        <el-col :span="24">
-          <div class="operation-section">
-            <h4>清理过期缓存</h4>
-            <p class="operation-desc">清理所有已过期的缓存条目，释放内存空间。</p>
-            <el-button type="warning" @click="cleanupExpired" :loading="cleaningUp">
-              清理过期缓存
-            </el-button>
+        <el-col :xs="24" :md="8">
+          <div class="operation-item">
+            <div class="operation-icon" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);">
+              <el-icon><Brush /></el-icon>
+            </div>
+            <div class="operation-content">
+              <h4>清理过期缓存</h4>
+              <p>清理所有已过期的缓存条目，释放内存</p>
+              <el-button type="warning" size="large" @click="cleanupExpired" :loading="cleaningUp">
+                <el-icon><Brush /></el-icon>
+                清理过期缓存
+              </el-button>
+            </div>
           </div>
         </el-col>
       </el-row>
@@ -131,7 +226,10 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
+import { 
+  Refresh, Box, CircleCheck, CircleClose, TrendCharts, 
+  Setting, Check, PieChart, Operation, Search, Delete, Brush 
+} from '@element-plus/icons-vue'
 import api from '../api'
 
 interface CacheStats {
@@ -168,6 +266,12 @@ const cleaningUp = ref(false)
 
 function formatHitRate(percentage: number): string {
   return `${percentage.toFixed(1)}%`
+}
+
+function getHitRateColor(rate: number): string {
+  if (rate >= 0.8) return '#67c23a'
+  if (rate >= 0.5) return '#e6a23c'
+  return '#f56c6c'
 }
 
 async function fetchStats() {
@@ -268,44 +372,230 @@ onMounted(() => {
 
 <style scoped>
 .cache-management {
-  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
 }
 
-.cache-management h1 {
-  margin-bottom: 20px;
-}
-
-.card-header {
+/* 页面标题 */
+.page-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  margin-bottom: 24px;
 }
 
-.operations-card {
-  margin-top: 20px;
-}
-
-.operation-section {
-  padding: 10px 0;
-}
-
-.operation-section h4 {
-  margin: 0 0 10px 0;
+.header-left h1 {
+  margin: 0 0 8px 0;
+  font-size: 24px;
+  font-weight: 600;
   color: #303133;
 }
 
-.operation-desc {
-  margin: 0 0 15px 0;
-  color: #909399;
+.subtitle {
+  margin: 0;
   font-size: 14px;
+  color: #909399;
 }
 
-.domain-input {
-  max-width: 400px;
+/* 统计卡片 */
+.stats-row {
+  margin-bottom: 24px;
 }
 
-.unit-label {
-  margin-left: 10px;
-  color: #999;
+.stat-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  transition: transform 0.3s, box-shadow 0.3s;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+.stat-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 24px;
+}
+
+.stat-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.stat-label {
+  font-size: 13px;
+  color: #909399;
+  margin-top: 4px;
+}
+
+/* 卡片样式 */
+.config-card,
+.chart-card,
+.operations-card {
+  border-radius: 12px;
+  border: none;
+  margin-bottom: 20px;
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.card-title .el-icon {
+  color: #667eea;
+}
+
+.form-tip {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
+}
+
+/* 命中率图表 */
+.hit-rate-chart {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px 0;
+}
+
+.chart-ring {
+  margin-bottom: 24px;
+}
+
+.chart-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.chart-value {
+  font-size: 28px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.chart-label {
+  font-size: 14px;
+  color: #909399;
+}
+
+.chart-legend {
+  display: flex;
+  gap: 32px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.legend-label {
+  font-size: 14px;
+  color: #606266;
+}
+
+.legend-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+
+/* 操作区域 */
+.operation-item {
+  display: flex;
+  gap: 16px;
+  padding: 20px;
+  background: #f8f9fa;
+  border-radius: 12px;
+  height: 100%;
+}
+
+.operation-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.operation-content {
+  flex: 1;
+}
+
+.operation-content h4 {
+  margin: 0 0 8px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.operation-content p {
+  margin: 0 0 16px 0;
+  font-size: 13px;
+  color: #909399;
+}
+
+.operation-input {
+  max-width: 100%;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .page-header {
+    flex-direction: column;
+    gap: 16px;
+  }
+  
+  .stat-card {
+    padding: 16px;
+  }
+  
+  .stat-value {
+    font-size: 20px;
+  }
+  
+  .operation-item {
+    flex-direction: column;
+    text-align: center;
+  }
+  
+  .operation-icon {
+    margin: 0 auto;
+  }
 }
 </style>

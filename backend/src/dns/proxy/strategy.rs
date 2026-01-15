@@ -254,17 +254,17 @@ impl ProxyManager {
     }
 
     /// Query the fastest server based on historical response times
-    /// Falls back to concurrent strategy if no historical data exists
+    /// Falls back to concurrent strategy if any server lacks historical data
+    /// Periodically re-probes all servers to handle network changes
     async fn query_fastest(&self, query: &DnsQuery, trace_id: &str) -> Result<QueryResult> {
         use tracing::info;
         
-        // Check if we have any historical data
-        let has_stats = self.upstream_manager.has_any_stats().await;
+        // Check if all healthy servers have recent stats (within last 5 minutes)
+        let needs_probe = self.upstream_manager.needs_reprobe().await;
         
-        if !has_stats {
-            // No historical data - use concurrent strategy to probe all servers
+        if needs_probe {
             info!(
-                "[{}] [Fastest] No historical data, falling back to concurrent strategy for initial probe",
+                "[{}] [Fastest] Some servers need re-probing, using concurrent strategy",
                 trace_id
             );
             return self.query_concurrent(query, trace_id).await;

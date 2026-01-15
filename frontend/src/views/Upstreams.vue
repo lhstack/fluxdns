@@ -1,29 +1,94 @@
 <template>
   <div class="upstreams">
+    <!-- 页面标题 -->
     <div class="page-header">
-      <h1>上游服务器管理</h1>
-      <el-button type="primary" @click="openCreateDialog">
+      <div class="header-left">
+        <h1>上游服务器管理</h1>
+        <p class="subtitle">配置 DNS 上游服务器，支持 UDP、DoT、DoH、DoQ、DoH3 协议</p>
+      </div>
+      <el-button type="primary" size="large" @click="openCreateDialog">
         <el-icon><Plus /></el-icon>
         添加服务器
       </el-button>
     </div>
 
-    <el-card>
-      <el-table :data="servers" v-loading="loading" stripe>
-        <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column prop="name" label="名称" min-width="150" />
-        <el-table-column prop="address" label="地址" min-width="250" />
+    <!-- 统计卡片 -->
+    <el-row :gutter="20" class="stats-row">
+      <el-col :xs="12" :sm="6">
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <el-icon><Connection /></el-icon>
+          </div>
+          <div class="stat-info">
+            <span class="stat-value">{{ pagination.total }}</span>
+            <span class="stat-label">服务器总数</span>
+          </div>
+        </div>
+      </el-col>
+      <el-col :xs="12" :sm="6">
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
+            <el-icon><CircleCheck /></el-icon>
+          </div>
+          <div class="stat-info">
+            <span class="stat-value">{{ healthyCount }}</span>
+            <span class="stat-label">健康服务器</span>
+          </div>
+        </div>
+      </el-col>
+      <el-col :xs="12" :sm="6">
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #f5576c 0%, #f093fb 100%);">
+            <el-icon><Warning /></el-icon>
+          </div>
+          <div class="stat-info">
+            <span class="stat-value">{{ unhealthyCount }}</span>
+            <span class="stat-label">异常服务器</span>
+          </div>
+        </div>
+      </el-col>
+      <el-col :xs="12" :sm="6">
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+            <el-icon><DataAnalysis /></el-icon>
+          </div>
+          <div class="stat-info">
+            <span class="stat-value">{{ totalQueries }}</span>
+            <span class="stat-label">总查询次数</span>
+          </div>
+        </div>
+      </el-col>
+    </el-row>
+
+    <!-- 服务器表格 -->
+    <el-card class="table-card" shadow="never">
+      <el-table :data="servers" v-loading="loading" stripe class="custom-table">
+        <el-table-column prop="id" label="ID" width="70" />
+        <el-table-column prop="name" label="名称" min-width="140">
+          <template #default="{ row }">
+            <span class="server-name">{{ row.name }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="address" label="地址" min-width="260">
+          <template #default="{ row }">
+            <span class="server-address">{{ row.address }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="protocol" label="协议" width="100">
           <template #default="{ row }">
-            <el-tag :type="getProtocolTag(row.protocol)">
+            <el-tag :type="getProtocolTag(row.protocol)" effect="dark">
               {{ row.protocol.toUpperCase() }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="timeout" label="超时(ms)" width="100" />
-        <el-table-column label="状态" width="100">
+        <el-table-column prop="timeout" label="超时" width="90">
           <template #default="{ row }">
-            <el-tag :type="getStatusTag(row)">
+            <span class="timeout-value">{{ row.timeout }}ms</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }">
+            <el-tag :type="getStatusTag(row)" effect="plain" size="small">
               {{ getStatusLabel(row) }}
             </el-tag>
           </template>
@@ -33,92 +98,111 @@
             <el-switch
               v-model="row.enabled"
               @change="toggleEnabled(row)"
+              inline-prompt
+              active-text="启"
+              inactive-text="停"
             />
           </template>
         </el-table-column>
-        <el-table-column label="统计" width="180">
+        <el-table-column label="统计" width="160">
           <template #default="{ row }">
             <div class="stats-cell">
-              <span>查询: {{ getServerStats(row.id)?.queries || 0 }}</span>
-              <span>失败: {{ getServerStats(row.id)?.failures || 0 }}</span>
+              <div class="stats-item">
+                <span class="stats-label">查询</span>
+                <span class="stats-value">{{ getServerStats(row.id)?.queries || 0 }}</span>
+              </div>
+              <div class="stats-item">
+                <span class="stats-label">延迟</span>
+                <span class="stats-value">{{ formatResponseTime(getServerStats(row.id)?.avg_response_time_ms) }}</span>
+              </div>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" link @click="openEditDialog(row)">
-              编辑
+              <el-icon><Edit /></el-icon> 编辑
             </el-button>
             <el-button type="danger" link @click="confirmDelete(row)">
-              删除
+              <el-icon><Delete /></el-icon> 删除
             </el-button>
           </template>
         </el-table-column>
+        <template #empty>
+          <el-empty description="暂无上游服务器" />
+        </template>
       </el-table>
 
       <div class="pagination-container">
         <el-pagination
           v-model:current-page="pagination.page"
           v-model:page-size="pagination.pageSize"
-          :page-sizes="[5, 10, 20, 50, 100]"
+          :page-sizes="[10, 20, 50, 100]"
           :total="pagination.total"
-          layout="total, sizes, prev, pager, next, jumper"
-          :pager-count="5"
-          prev-text="上一页"
-          next-text="下一页"
+          layout="total, sizes, prev, pager, next"
           @size-change="handleSizeChange"
           @current-change="handlePageChange"
         />
       </div>
     </el-card>
 
-    <!-- Create/Edit Dialog -->
+    <!-- 创建/编辑对话框 -->
     <el-dialog
       v-model="dialogVisible"
       :title="isEditing ? '编辑服务器' : '添加服务器'"
-      width="500px"
+      width="520px"
+      class="custom-dialog"
     >
       <el-form
         ref="formRef"
         :model="formData"
         :rules="formRules"
-        label-width="80px"
+        label-position="top"
       >
         <el-form-item label="名称" prop="name">
-          <el-input v-model="formData.name" placeholder="Cloudflare DNS" />
+          <el-input v-model="formData.name" placeholder="Cloudflare DNS" size="large" />
         </el-form-item>
-        <el-form-item label="协议" prop="protocol">
-          <el-select v-model="formData.protocol" placeholder="选择协议">
-            <el-option label="UDP" value="udp" />
-            <el-option label="DoT (DNS over TLS)" value="dot" />
-            <el-option label="DoH (DNS over HTTPS)" value="doh" />
-            <el-option label="DoQ (DNS over QUIC)" value="doq" />
-            <el-option label="DoH3 (DNS over HTTP/3)" value="doh3" />
-          </el-select>
-        </el-form-item>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="协议" prop="protocol">
+              <el-select v-model="formData.protocol" placeholder="选择协议" size="large" style="width: 100%">
+                <el-option label="UDP" value="udp" />
+                <el-option label="DoT (DNS over TLS)" value="dot" />
+                <el-option label="DoH (DNS over HTTPS)" value="doh" />
+                <el-option label="DoQ (DNS over QUIC)" value="doq" />
+                <el-option label="DoH3 (DNS over HTTP/3)" value="doh3" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="超时 (毫秒)" prop="timeout">
+              <el-input-number
+                v-model="formData.timeout"
+                :min="100"
+                :max="60000"
+                :step="100"
+                size="large"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+        </el-row>
         <el-form-item label="地址" prop="address">
           <el-input
             v-model="formData.address"
             :placeholder="getAddressPlaceholder(formData.protocol)"
+            size="large"
           />
+          <div class="form-tip">{{ getAddressTip(formData.protocol) }}</div>
         </el-form-item>
-        <el-form-item label="超时" prop="timeout">
-          <el-input-number
-            v-model="formData.timeout"
-            :min="100"
-            :max="60000"
-            :step="100"
-          />
-          <span class="unit-label">毫秒</span>
-        </el-form-item>
-        <el-form-item label="启用" prop="enabled">
-          <el-switch v-model="formData.enabled" />
+        <el-form-item label="状态" prop="enabled">
+          <el-switch v-model="formData.enabled" active-text="启用" inactive-text="禁用" size="large" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitForm" :loading="submitting">
-          {{ isEditing ? '保存' : '创建' }}
+        <el-button @click="dialogVisible = false" size="large">取消</el-button>
+        <el-button type="primary" @click="submitForm" :loading="submitting" size="large">
+          {{ isEditing ? '保存修改' : '创建服务器' }}
         </el-button>
       </template>
     </el-dialog>
@@ -126,9 +210,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Edit, Delete, Connection, CircleCheck, Warning, DataAnalysis } from '@element-plus/icons-vue'
 import api from '../api'
 
 interface UpstreamServer {
@@ -170,6 +254,24 @@ const pagination = reactive({
   total: 0
 })
 
+const healthyCount = computed(() => {
+  let count = 0
+  serverStatus.value.forEach(s => { if (s.healthy && s.enabled) count++ })
+  return count
+})
+
+const unhealthyCount = computed(() => {
+  let count = 0
+  serverStatus.value.forEach(s => { if (!s.healthy && s.enabled) count++ })
+  return count
+})
+
+const totalQueries = computed(() => {
+  let total = 0
+  serverStatus.value.forEach(s => { total += s.queries })
+  return total
+})
+
 const formData = reactive({
   name: '',
   address: '',
@@ -196,11 +298,11 @@ const formRules: FormRules = {
 
 function getProtocolTag(protocol: string): string {
   const tags: Record<string, string> = {
-    udp: '',
+    udp: 'info',
     dot: 'success',
     doh: 'warning',
-    doq: 'danger',
-    doh3: 'info'
+    doq: '',
+    doh3: 'danger'
   }
   return tags[protocol] || ''
 }
@@ -223,6 +325,13 @@ function getServerStats(id: number): ServerStatus | undefined {
   return serverStatus.value.get(id)
 }
 
+function formatResponseTime(ms: number | undefined): string {
+  if (ms === undefined || ms === null) return '-'
+  // 如果是 u64::MAX 或非常大的数字，说明没有数据
+  if (ms > 100000) return '-'
+  return `${Math.round(ms)}ms`
+}
+
 function getAddressPlaceholder(protocol: string): string {
   const placeholders: Record<string, string> = {
     udp: '8.8.8.8:53',
@@ -232,6 +341,17 @@ function getAddressPlaceholder(protocol: string): string {
     doh3: 'https://dns.adguard-dns.com/dns-query'
   }
   return placeholders[protocol] || ''
+}
+
+function getAddressTip(protocol: string): string {
+  const tips: Record<string, string> = {
+    udp: '格式: IP:端口，如 8.8.8.8:53',
+    dot: '格式: 域名:端口，如 dns.google:853',
+    doh: '格式: HTTPS URL，如 https://dns.google/dns-query',
+    doq: '格式: 域名:端口，如 dns.adguard-dns.com:853',
+    doh3: '格式: HTTPS URL，如 https://dns.adguard-dns.com/dns-query'
+  }
+  return tips[protocol] || ''
 }
 
 async function fetchServers() {
@@ -272,7 +392,7 @@ async function fetchStatus() {
     }
     serverStatus.value = statusMap
   } catch {
-    // Silently fail for status updates
+    // Silently fail
   }
 }
 
@@ -364,48 +484,184 @@ async function confirmDelete(server: UpstreamServer) {
 onMounted(() => {
   fetchServers()
   fetchStatus()
-  // Refresh status every 30 seconds
   statusInterval = setInterval(fetchStatus, 30000)
 })
 
 onUnmounted(() => {
-  if (statusInterval) {
-    clearInterval(statusInterval)
-  }
+  if (statusInterval) clearInterval(statusInterval)
 })
 </script>
 
 <style scoped>
 .upstreams {
-  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
 }
 
+/* 页面标题 */
 .page-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
+  align-items: flex-start;
+  margin-bottom: 24px;
 }
 
-.page-header h1 {
+.header-left h1 {
+  margin: 0 0 8px 0;
+  font-size: 24px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.subtitle {
   margin: 0;
+  font-size: 14px;
+  color: #909399;
+}
+
+/* 统计卡片 */
+.stats-row {
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  transition: transform 0.3s, box-shadow 0.3s;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+.stat-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 24px;
+}
+
+.stat-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.stat-label {
+  font-size: 13px;
+  color: #909399;
+  margin-top: 4px;
+}
+
+/* 表格卡片 */
+.table-card {
+  border-radius: 12px;
+  border: none;
+}
+
+.table-card :deep(.el-card__body) {
+  padding: 0;
+}
+
+.custom-table :deep(.el-table__header th) {
+  background: #f8f9fa;
+  color: #606266;
+  font-weight: 600;
+}
+
+.server-name {
+  font-weight: 500;
+  color: #303133;
+}
+
+.server-address {
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 13px;
+  color: #606266;
+}
+
+.timeout-value {
+  color: #909399;
 }
 
 .stats-cell {
   display: flex;
-  flex-direction: column;
-  font-size: 12px;
-  color: #666;
+  gap: 16px;
 }
 
-.unit-label {
-  margin-left: 10px;
-  color: #999;
+.stats-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stats-label {
+  font-size: 11px;
+  color: #909399;
+}
+
+.stats-value {
+  font-size: 13px;
+  font-weight: 500;
+  color: #303133;
 }
 
 .pagination-container {
   display: flex;
   justify-content: flex-end;
-  margin-top: 20px;
+  padding: 16px 20px;
+  border-top: 1px solid #f0f0f0;
+}
+
+/* 对话框 */
+.custom-dialog :deep(.el-dialog__header) {
+  border-bottom: 1px solid #f0f0f0;
+  padding: 20px 24px;
+}
+
+.custom-dialog :deep(.el-dialog__body) {
+  padding: 24px;
+}
+
+.custom-dialog :deep(.el-dialog__footer) {
+  border-top: 1px solid #f0f0f0;
+  padding: 16px 24px;
+}
+
+.form-tip {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .page-header {
+    flex-direction: column;
+    gap: 16px;
+  }
+  
+  .stat-card {
+    padding: 16px;
+  }
+  
+  .stat-value {
+    font-size: 20px;
+  }
 }
 </style>

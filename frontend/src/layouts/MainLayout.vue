@@ -1,16 +1,17 @@
 <template>
   <el-container class="layout-container">
-    <el-aside width="220px" class="sidebar">
+    <el-aside width="240px" class="sidebar">
+      <!-- Logo -->
       <div class="logo">
         <img src="/logo.svg" alt="FluxDNS" class="logo-icon" />
-        <h2>FluxDNS</h2>
+        <span class="logo-text">FluxDNS</span>
       </div>
+
+      <!-- 导航菜单 -->
       <el-menu
         :default-active="activeMenu"
         router
-        background-color="#304156"
-        text-color="#bfcbd9"
-        active-text-color="#409EFF"
+        class="sidebar-menu"
       >
         <el-menu-item index="/">
           <el-icon><Odometer /></el-icon>
@@ -50,13 +51,38 @@
         </el-menu-item>
       </el-menu>
     </el-aside>
-    <el-container>
+
+    <el-container class="main-container">
+      <!-- 顶部栏 -->
       <el-header class="header">
+        <div class="header-left">
+          <el-breadcrumb separator="/">
+            <el-breadcrumb-item :to="{ path: '/' }">首页</el-breadcrumb-item>
+            <el-breadcrumb-item v-if="currentPageTitle">{{ currentPageTitle }}</el-breadcrumb-item>
+          </el-breadcrumb>
+        </div>
         <div class="header-right">
-          <span class="username">{{ authStore.username }}</span>
-          <el-button type="text" @click="handleLogout">退出</el-button>
+          <el-dropdown trigger="click">
+            <div class="user-info">
+              <el-avatar :size="32" class="user-avatar">
+                {{ authStore.username?.charAt(0).toUpperCase() }}
+              </el-avatar>
+              <span class="username">{{ authStore.username }}</span>
+              <el-icon><ArrowDown /></el-icon>
+            </div>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item @click="handleLogout">
+                  <el-icon><SwitchButton /></el-icon>
+                  退出登录
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
       </el-header>
+
+      <!-- 主内容区 -->
       <el-main class="main-content">
         <router-view />
       </el-main>
@@ -68,12 +94,30 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { ArrowDown, SwitchButton } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 
 const activeMenu = computed(() => route.path)
+
+const pageMap: Record<string, string> = {
+  '/': '仪表盘',
+  '/records': 'DNS 记录',
+  '/rewrite': '重写规则',
+  '/upstreams': '上游服务器',
+  '/cache': '缓存管理',
+  '/query': 'DNS 查询',
+  '/logs': '查询日志',
+  '/listeners': '服务监听',
+  '/settings': '设置'
+}
+
+const currentPageTitle = computed(() => {
+  if (route.path === '/') return ''
+  return pageMap[route.path] || ''
+})
 
 function handleLogout() {
   authStore.logout()
@@ -86,51 +130,136 @@ function handleLogout() {
   height: 100vh;
 }
 
+/* 侧边栏 */
 .sidebar {
-  background-color: #304156;
+  background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
 }
 
 .logo {
-  height: 60px;
+  height: 64px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
-  gap: 8px;
+  gap: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .logo-icon {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
+  filter: brightness(0) invert(1);
 }
 
-.logo h2 {
-  margin: 0;
-  font-size: 18px;
+.logo-text {
+  font-size: 20px;
   font-weight: 600;
-  letter-spacing: 1px;
+  color: #fff;
+  letter-spacing: 2px;
 }
 
+/* 菜单样式 */
+.sidebar-menu {
+  border-right: none;
+  background: transparent;
+  padding: 12px 0;
+}
+
+.sidebar-menu :deep(.el-menu-item) {
+  height: 50px;
+  line-height: 50px;
+  margin: 4px 12px;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.8);
+  transition: all 0.3s;
+}
+
+.sidebar-menu :deep(.el-menu-item:hover) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.sidebar-menu :deep(.el-menu-item.is-active) {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  font-weight: 500;
+}
+
+.sidebar-menu :deep(.el-menu-item .el-icon) {
+  font-size: 18px;
+  margin-right: 8px;
+}
+
+/* 主容器 */
+.main-container {
+  background: #f0f2f5;
+}
+
+/* 顶部栏 */
 .header {
-  background-color: #fff;
-  border-bottom: 1px solid #e6e6e6;
+  height: 64px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
+  padding: 0 24px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
 }
 
 .header-right {
   display: flex;
   align-items: center;
-  gap: 16px;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+  transition: background 0.3s;
+}
+
+.user-info:hover {
+  background: #f5f7fa;
+}
+
+.user-avatar {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  font-weight: 600;
 }
 
 .username {
-  color: #606266;
+  color: #303133;
+  font-size: 14px;
 }
 
+/* 主内容区 */
 .main-content {
-  background-color: #f5f7fa;
-  padding: 20px;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 64px !important;
+  }
+  
+  .logo-text {
+    display: none;
+  }
+  
+  .sidebar-menu :deep(.el-menu-item span) {
+    display: none;
+  }
 }
 </style>

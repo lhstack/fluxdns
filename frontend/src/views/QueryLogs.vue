@@ -1,48 +1,92 @@
 <template>
   <div class="query-logs">
-    <h1>查询日志</h1>
+    <!-- 页面标题 -->
+    <div class="page-header">
+      <div class="header-left">
+        <h1>查询日志</h1>
+        <p class="subtitle">查看 DNS 查询历史记录，分析查询统计数据</p>
+      </div>
+      <el-button type="primary" size="large" @click="fetchLogs">
+        <el-icon><Refresh /></el-icon>
+        刷新
+      </el-button>
+    </div>
 
-    <!-- Statistics -->
+    <!-- 统计卡片 -->
     <el-row :gutter="20" class="stats-row">
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <template #header>总查询数</template>
-          <div class="stat-value">{{ stats.total_queries }}</div>
-        </el-card>
+      <el-col :xs="12" :sm="6">
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <el-icon><DataAnalysis /></el-icon>
+          </div>
+          <div class="stat-info">
+            <span class="stat-value">{{ stats.total_queries }}</span>
+            <span class="stat-label">总查询数</span>
+          </div>
+        </div>
       </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <template #header>今日查询</template>
-          <div class="stat-value">{{ stats.queries_today }}</div>
-        </el-card>
+      <el-col :xs="12" :sm="6">
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
+            <el-icon><Calendar /></el-icon>
+          </div>
+          <div class="stat-info">
+            <span class="stat-value">{{ stats.queries_today }}</span>
+            <span class="stat-label">今日查询</span>
+          </div>
+        </div>
       </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <template #header>缓存命中</template>
-          <div class="stat-value">{{ stats.cache_hits }}</div>
-        </el-card>
+      <el-col :xs="12" :sm="6">
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #f5576c 0%, #f093fb 100%);">
+            <el-icon><CircleCheck /></el-icon>
+          </div>
+          <div class="stat-info">
+            <span class="stat-value">{{ stats.cache_hits }}</span>
+            <span class="stat-label">缓存命中</span>
+          </div>
+        </div>
       </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <template #header>命中率</template>
-          <div class="stat-value">{{ (stats.cache_hit_rate * 100).toFixed(1) }}%</div>
-        </el-card>
+      <el-col :xs="12" :sm="6">
+        <div class="stat-card">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+            <el-icon><TrendCharts /></el-icon>
+          </div>
+          <div class="stat-info">
+            <span class="stat-value">{{ (stats.cache_hit_rate * 100).toFixed(1) }}%</span>
+            <span class="stat-label">命中率</span>
+          </div>
+        </div>
       </el-col>
     </el-row>
 
-    <!-- Filters -->
-    <el-card class="filter-card">
-      <el-form :inline="true" :model="filters">
-        <el-form-item label="域名">
+    <!-- 筛选器 -->
+    <el-card class="filter-card" shadow="never">
+      <div class="filter-form">
+        <div class="filter-item">
+          <label>域名</label>
           <el-input
             v-model="filters.query_name"
             placeholder="搜索域名"
             clearable
             @clear="fetchLogs"
-          />
-        </el-form-item>
-        <el-form-item label="类型">
-          <el-select v-model="filters.query_type" placeholder="全部" clearable style="width: 120px">
+            @keyup.enter="fetchLogs"
+            size="large"
+          >
+            <template #prefix>
+              <el-icon><Search /></el-icon>
+            </template>
+          </el-input>
+        </div>
+        <div class="filter-item">
+          <label>类型</label>
+          <el-select 
+            v-model="filters.query_type" 
+            placeholder="全部类型" 
+            clearable 
+            size="large"
+            @change="fetchLogs"
+          >
             <el-option
               v-for="type in recordTypes"
               :key="type"
@@ -50,78 +94,108 @@
               :value="type"
             />
           </el-select>
-        </el-form-item>
-        <el-form-item label="客户端 IP">
+        </div>
+        <div class="filter-item">
+          <label>客户端 IP</label>
           <el-input
             v-model="filters.client_ip"
             placeholder="搜索 IP"
             clearable
             @clear="fetchLogs"
-          />
-        </el-form-item>
-        <el-form-item label="缓存命中">
-          <el-select v-model="filters.cache_hit" placeholder="全部" clearable style="width: 120px">
-            <el-option label="是" :value="true" />
-            <el-option label="否" :value="false" />
+            @keyup.enter="fetchLogs"
+            size="large"
+          >
+            <template #prefix>
+              <el-icon><Monitor /></el-icon>
+            </template>
+          </el-input>
+        </div>
+        <div class="filter-item">
+          <label>缓存命中</label>
+          <el-select 
+            v-model="filters.cache_hit" 
+            placeholder="全部" 
+            clearable 
+            size="large"
+            @change="fetchLogs"
+          >
+            <el-option label="命中" :value="true" />
+            <el-option label="未命中" :value="false" />
           </el-select>
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="fetchLogs">搜索</el-button>
-          <el-button @click="resetFilters">重置</el-button>
-        </el-form-item>
-      </el-form>
+        </div>
+        <div class="filter-actions">
+          <el-button type="primary" @click="fetchLogs" size="large">
+            <el-icon><Search /></el-icon>
+            搜索
+          </el-button>
+          <el-button @click="resetFilters" size="large">
+            <el-icon><RefreshRight /></el-icon>
+            重置
+          </el-button>
+        </div>
+      </div>
     </el-card>
 
-    <!-- Logs Table -->
-    <el-card>
-      <el-table :data="logs" v-loading="loading" stripe>
+    <!-- 日志表格 -->
+    <el-card class="table-card" shadow="never">
+      <el-table :data="logs" v-loading="loading" stripe class="custom-table">
         <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column prop="query_name" label="查询域名" min-width="200" />
-        <el-table-column prop="query_type" label="类型" width="80">
+        <el-table-column prop="query_name" label="查询域名" min-width="200">
           <template #default="{ row }">
-            <el-tag size="small">{{ row.query_type }}</el-tag>
+            <span class="domain-name">{{ row.query_name }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="client_ip" label="客户端 IP" width="140" />
-        <el-table-column prop="response_code" label="响应码" width="120">
+        <el-table-column prop="query_type" label="类型" width="90">
           <template #default="{ row }">
-            <el-tag :type="getResponseCodeType(row.response_code)" size="small">
+            <el-tag effect="dark" size="small">{{ row.query_type }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="client_ip" label="客户端 IP" width="140">
+          <template #default="{ row }">
+            <span class="client-ip">{{ row.client_ip }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="response_code" label="响应码" width="110">
+          <template #default="{ row }">
+            <el-tag :type="getResponseCodeType(row.response_code)" size="small" effect="plain">
               {{ row.response_code || '-' }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="response_time" label="响应时间" width="100">
           <template #default="{ row }">
-            {{ row.response_time ? `${row.response_time}ms` : '-' }}
+            <span class="response-time">{{ row.response_time ? `${row.response_time}ms` : '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="cache_hit" label="缓存" width="80">
+        <el-table-column prop="cache_hit" label="缓存" width="90">
           <template #default="{ row }">
-            <el-tag :type="row.cache_hit ? 'success' : 'info'" size="small">
+            <el-tag :type="row.cache_hit ? 'success' : 'info'" size="small" effect="plain">
               {{ row.cache_hit ? '命中' : '未命中' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="upstream_used" label="上游服务器" width="120">
+        <el-table-column prop="upstream_used" label="上游服务器" min-width="120">
           <template #default="{ row }">
-            {{ row.upstream_used || '-' }}
+            <span class="upstream-name">{{ row.upstream_used || '-' }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="created_at" label="时间" width="180">
           <template #default="{ row }">
-            {{ formatTime(row.created_at) }}
+            <span class="time-value">{{ formatTime(row.created_at) }}</span>
           </template>
         </el-table-column>
+        <template #empty>
+          <el-empty description="暂无查询日志" />
+        </template>
       </el-table>
 
-      <!-- Pagination -->
       <div class="pagination-container">
         <el-pagination
           v-model:current-page="currentPage"
           v-model:page-size="pageSize"
           :page-sizes="[20, 50, 100]"
           :total="total"
-          layout="total, sizes, prev, pager, next, jumper"
+          layout="total, sizes, prev, pager, next"
           @size-change="handleSizeChange"
           @current-change="handlePageChange"
         />
@@ -133,6 +207,10 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
+import { 
+  Refresh, DataAnalysis, Calendar, CircleCheck, TrendCharts,
+  Search, Monitor, RefreshRight 
+} from '@element-plus/icons-vue'
 import api from '../api'
 
 interface QueryLog {
@@ -255,31 +333,192 @@ onMounted(() => {
 
 <style scoped>
 .query-logs {
-  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
 }
 
-.query-logs h1 {
-  margin-bottom: 20px;
+/* 页面标题 */
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
 }
 
+.header-left h1 {
+  margin: 0 0 8px 0;
+  font-size: 24px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: #909399;
+}
+
+/* 统计卡片 */
 .stats-row {
-  margin-bottom: 20px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  transition: transform 0.3s, box-shadow 0.3s;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+.stat-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 24px;
+}
+
+.stat-info {
+  display: flex;
+  flex-direction: column;
 }
 
 .stat-value {
-  font-size: 28px;
-  font-weight: bold;
-  color: #409EFF;
-  text-align: center;
+  font-size: 24px;
+  font-weight: 600;
+  color: #303133;
 }
 
+.stat-label {
+  font-size: 13px;
+  color: #909399;
+  margin-top: 4px;
+}
+
+/* 筛选卡片 */
 .filter-card {
-  margin-bottom: 20px;
+  border-radius: 12px;
+  border: none;
+  margin-bottom: 24px;
+}
+
+.filter-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+}
+
+.filter-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+}
+
+.filter-item label {
+  font-size: 13px;
+  color: #606266;
+  font-weight: 500;
+}
+
+.filter-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* 表格卡片 */
+.table-card {
+  border-radius: 12px;
+  border: none;
+}
+
+.table-card :deep(.el-card__body) {
+  padding: 0;
+}
+
+.custom-table :deep(.el-table__header th) {
+  background: #f8f9fa;
+  color: #606266;
+  font-weight: 600;
+}
+
+.domain-name {
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 13px;
+  color: #303133;
+}
+
+.client-ip {
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 13px;
+  color: #606266;
+}
+
+.response-time {
+  color: #909399;
+}
+
+.upstream-name {
+  font-size: 13px;
+  color: #606266;
+}
+
+.time-value {
+  font-size: 13px;
+  color: #909399;
 }
 
 .pagination-container {
-  margin-top: 20px;
   display: flex;
   justify-content: flex-end;
+  padding: 16px 20px;
+  border-top: 1px solid #f0f0f0;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .page-header {
+    flex-direction: column;
+    gap: 16px;
+  }
+  
+  .stat-card {
+    padding: 16px;
+  }
+  
+  .stat-value {
+    font-size: 20px;
+  }
+  
+  .filter-form {
+    flex-direction: column;
+  }
+  
+  .filter-item {
+    width: 100%;
+  }
+  
+  .filter-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+  
+  .filter-actions .el-button {
+    flex: 1;
+  }
 }
 </style>
