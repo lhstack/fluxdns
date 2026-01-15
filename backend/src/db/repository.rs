@@ -81,6 +81,75 @@ impl DnsRecordRepository {
         Ok(result)
     }
 
+    /// Get DNS records by name and type with wildcard support
+    /// 
+    /// This method first tries exact match, then falls back to wildcard matching.
+    /// Wildcard records are stored as `*.example.com` and match any subdomain.
+    /// 
+    /// Matching priority (highest to lowest):
+    /// 1. Exact match: `sub.example.com`
+    /// 2. Direct wildcard: `*.example.com` matches `sub.example.com`
+    /// 3. Parent wildcard: `*.example.com` matches `a.b.example.com`
+    pub async fn get_by_name_and_type_with_wildcard(&self, name: &str, record_type: &str) -> Result<Vec<DnsRecord>> {
+        // Build all possible wildcard names
+        // For "a.b.example.com", generate: ["*.b.example.com", "*.example.com", "*.com"]
+        let parts: Vec<&str> = name.split('.').collect();
+        let mut wildcard_names: Vec<String> = Vec::with_capacity(parts.len());
+        
+        for i in 1..parts.len() {
+            wildcard_names.push(format!("*.{}", parts[i..].join(".")));
+        }
+
+        // Query exact match and all possible wildcards in one query
+        // Results are ordered: exact match first, then wildcards from most specific to least
+        if wildcard_names.is_empty() {
+            // No wildcards possible (e.g., "com"), just do exact match
+            return self.get_by_name_and_type(name, record_type).await;
+        }
+
+        // Build placeholders for IN clause
+        let placeholders: Vec<&str> = wildcard_names.iter().map(|_| "?").collect();
+        let query = format!(
+            r#"
+            SELECT * FROM dns_records 
+            WHERE record_type = ? AND enabled = TRUE AND name IN (?, {})
+            ORDER BY 
+                CASE 
+                    WHEN name = ? THEN 0 
+                    ELSE LENGTH(name) 
+                END DESC
+            "#,
+            placeholders.join(", ")
+        );
+
+        let mut query_builder = sqlx::query_as::<_, DnsRecord>(&query)
+            .bind(record_type)
+            .bind(name);  // Exact match
+        
+        for wildcard in &wildcard_names {
+            query_builder = query_builder.bind(wildcard);
+        }
+        
+        query_builder = query_builder.bind(name);  // For ORDER BY CASE
+
+        let results = query_builder.fetch_all(&self.pool).await?;
+
+        // Return exact match if found, otherwise return the most specific wildcard
+        if results.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Check if first result is exact match
+        if results[0].name == name {
+            // Return only exact matches
+            return Ok(results.into_iter().filter(|r| r.name == name).collect());
+        }
+
+        // Return the most specific wildcard matches (all with the same name)
+        let most_specific = results[0].name.clone();
+        Ok(results.into_iter().filter(|r| r.name == most_specific).collect())
+    }
+
     /// List all DNS records
     pub async fn list(&self) -> Result<Vec<DnsRecord>> {
         let result = sqlx::query_as::<_, DnsRecord>(

@@ -270,7 +270,8 @@ impl DnsResolver {
         use std::str::FromStr;
 
         let record_type_str = query.record_type.to_string();
-        let records = db.dns_records().get_by_name_and_type(&query.name, &record_type_str).await?;
+        // Use wildcard-aware query method
+        let records = db.dns_records().get_by_name_and_type_with_wildcard(&query.name, &record_type_str).await?;
 
         if records.is_empty() {
             return Ok(None);
@@ -283,10 +284,17 @@ impl DnsResolver {
                 continue;
             }
 
+            // For wildcard records, use the queried name instead of the record name
+            let response_name = if record.name.starts_with("*.") {
+                &query.name
+            } else {
+                &record.name
+            };
+
             let dns_record = match query.record_type {
                 RecordType::A => {
                     if let Ok(ip) = Ipv4Addr::from_str(&record.value) {
-                        Some(DnsRecordData::a(&record.name, ip, record.ttl as u32))
+                        Some(DnsRecordData::a(response_name, ip, record.ttl as u32))
                     } else {
                         debug!("Invalid IPv4 address in DNS record: {}", record.value);
                         None
@@ -294,26 +302,26 @@ impl DnsResolver {
                 }
                 RecordType::AAAA => {
                     if let Ok(ip) = Ipv6Addr::from_str(&record.value) {
-                        Some(DnsRecordData::aaaa(&record.name, ip, record.ttl as u32))
+                        Some(DnsRecordData::aaaa(response_name, ip, record.ttl as u32))
                     } else {
                         debug!("Invalid IPv6 address in DNS record: {}", record.value);
                         None
                     }
                 }
                 RecordType::CNAME => {
-                    Some(DnsRecordData::cname(&record.name, &record.value, record.ttl as u32))
+                    Some(DnsRecordData::cname(response_name, &record.value, record.ttl as u32))
                 }
                 RecordType::MX => {
-                    Some(DnsRecordData::mx(&record.name, &record.value, record.priority as u16, record.ttl as u32))
+                    Some(DnsRecordData::mx(response_name, &record.value, record.priority as u16, record.ttl as u32))
                 }
                 RecordType::TXT => {
-                    Some(DnsRecordData::txt(&record.name, &record.value, record.ttl as u32))
+                    Some(DnsRecordData::txt(response_name, &record.value, record.ttl as u32))
                 }
                 RecordType::PTR => {
-                    Some(DnsRecordData::ptr(&record.name, &record.value, record.ttl as u32))
+                    Some(DnsRecordData::ptr(response_name, &record.value, record.ttl as u32))
                 }
                 RecordType::NS => {
-                    Some(DnsRecordData::ns(&record.name, &record.value, record.ttl as u32))
+                    Some(DnsRecordData::ns(response_name, &record.value, record.ttl as u32))
                 }
                 _ => None,
             };

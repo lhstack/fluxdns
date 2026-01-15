@@ -129,7 +129,8 @@
         label-position="top"
       >
         <el-form-item label="域名" prop="name">
-          <el-input v-model="formData.name" placeholder="example.com" size="large" />
+          <el-input v-model="formData.name" placeholder="example.com 或 *.example.com" size="large" />
+          <div class="form-tip">支持泛域名，如 *.example.com 可匹配所有子域名</div>
         </el-form-item>
         <el-row :gutter="16">
           <el-col :span="12">
@@ -508,5 +509,12 @@ onMounted(() => {
   .stat-value {
     font-size: 20px;
   }
+}
+
+/* 表单提示 */
+.form-tip {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
 }
 </style>

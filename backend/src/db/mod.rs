@@ -99,6 +99,13 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Composite index for wildcard DNS queries: WHERE name IN (...) AND record_type = ? AND enabled = TRUE
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_dns_records_name_type_enabled ON dns_records(name, record_type, enabled)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         // Rewrite rules table
         sqlx::query(
             r#"
@@ -125,6 +132,13 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Index for rewrite rules query: WHERE enabled = TRUE ORDER BY priority
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_rewrite_rules_enabled_priority ON rewrite_rules(enabled, priority)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         // Upstream servers table
         sqlx::query(
             r#"
@@ -139,6 +153,13 @@ impl Database {
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Index for upstream servers query: WHERE enabled = TRUE ORDER BY id
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_upstream_servers_enabled ON upstream_servers(enabled)"#,
         )
         .execute(&self.pool)
         .await?;
