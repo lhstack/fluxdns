@@ -16,8 +16,8 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-# 复制前端构建产物到正确的相对路径 (RustEmbed 配置为 ../frontend/dist)
-COPY dist ../frontend/dist
+# 复制前端构建产物到正确的相对路径 (RustEmbed)
+COPY dist dist
 
 # 构建
 RUN cargo build --release
