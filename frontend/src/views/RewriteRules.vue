@@ -6,10 +6,16 @@
         <h1>重写规则管理</h1>
         <p class="subtitle">配置 DNS 查询重写规则，支持精确匹配、通配符和正则表达式</p>
       </div>
-      <el-button type="primary" size="large" @click="openCreateDialog">
-        <el-icon><Plus /></el-icon>
-        添加规则
-      </el-button>
+      <div class="header-actions">
+        <el-button type="success" size="large" @click="openBatchDialog">
+          <el-icon><Upload /></el-icon>
+          批量导入
+        </el-button>
+        <el-button type="primary" size="large" @click="openCreateDialog">
+          <el-icon><Plus /></el-icon>
+          添加规则
+        </el-button>
+      </div>
     </div>
 
     <!-- 统计卡片 -->
@@ -116,6 +122,89 @@
       </el-table>
     </el-card>
 
+    <!-- 批量导入对话框 -->
+    <el-dialog
+      v-model="batchDialogVisible"
+      title="批量导入规则"
+      width="600px"
+      class="custom-dialog"
+    >
+      <el-form
+        ref="batchFormRef"
+        :model="batchFormData"
+        :rules="batchFormRules"
+        label-position="top"
+      >
+        <el-form-item label="域名列表" prop="patterns">
+          <el-input
+            v-model="batchFormData.patterns"
+            type="textarea"
+            :rows="8"
+            placeholder="每行一个域名，例如：&#10;ads.example.com&#10;tracker.example.com&#10;*.ads.com"
+          />
+          <div class="form-hint">支持换行、逗号、分号分隔，每个域名将创建一条规则</div>
+        </el-form-item>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="匹配类型" prop="match_type">
+              <el-select v-model="batchFormData.match_type" placeholder="选择匹配类型" size="large" style="width: 100%">
+                <el-option label="精确匹配" value="exact" />
+                <el-option label="通配符" value="wildcard" />
+                <el-option label="正则表达式" value="regex" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="动作类型" prop="action_type">
+              <el-select v-model="batchFormData.action_type" placeholder="选择动作类型" size="large" style="width: 100%">
+                <el-option label="阻止" value="block" />
+                <el-option label="映射到 IP" value="map_ip" />
+                <el-option label="映射到域名" value="map_domain" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item
+          v-if="batchFormData.action_type !== 'block'"
+          label="动作值"
+          prop="action_value"
+        >
+          <el-input
+            v-model="batchFormData.action_value"
+            :placeholder="getActionValuePlaceholder(batchFormData.action_type)"
+            size="large"
+          />
+        </el-form-item>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="优先级" prop="priority">
+              <el-input-number v-model="batchFormData.priority" :min="0" size="large" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="状态" prop="enabled">
+              <el-switch v-model="batchFormData.enabled" active-text="启用" inactive-text="禁用" size="large" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="描述" prop="description">
+          <el-input
+            v-model="batchFormData.description"
+            type="textarea"
+            :rows="2"
+            placeholder="批量规则描述（可选）"
+            size="large"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="batchDialogVisible = false" size="large">取消</el-button>
+        <el-button type="primary" @click="submitBatchForm" :loading="batchSubmitting" size="large">
+          批量创建
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 创建/编辑对话框 -->
     <el-dialog
       v-model="dialogVisible"
@@ -202,7 +291,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
-import { Plus, Edit, Delete, CircleCheck, CloseBold, Switch } from '@element-plus/icons-vue'
+import { Plus, Edit, Delete, CircleCheck, CloseBold, Switch, Upload } from '@element-plus/icons-vue'
 import api from '../api'
 
 interface RewriteRule {
@@ -221,9 +310,12 @@ interface RewriteRule {
 const rules = ref<RewriteRule[]>([])
 const loading = ref(false)
 const dialogVisible = ref(false)
+const batchDialogVisible = ref(false)
 const isEditing = ref(false)
 const submitting = ref(false)
+const batchSubmitting = ref(false)
 const formRef = ref<FormInstance>()
+const batchFormRef = ref<FormInstance>()
 const editingId = ref<number | null>(null)
 
 const enabledCount = computed(() => rules.value.filter(r => r.enabled).length)
@@ -244,6 +336,28 @@ const formRules: FormRules = {
   pattern: [
     { required: true, message: '请输入匹配模式', trigger: 'blur' },
     { max: 255, message: '匹配模式长度不能超过255个字符', trigger: 'blur' }
+  ],
+  match_type: [
+    { required: true, message: '请选择匹配类型', trigger: 'change' }
+  ],
+  action_type: [
+    { required: true, message: '请选择动作类型', trigger: 'change' }
+  ]
+}
+
+const batchFormData = reactive({
+  patterns: '',
+  match_type: 'exact',
+  action_type: 'block',
+  action_value: '',
+  priority: 0,
+  description: '',
+  enabled: true
+})
+
+const batchFormRules: FormRules = {
+  patterns: [
+    { required: true, message: '请输入域名列表', trigger: 'blur' }
   ],
   match_type: [
     { required: true, message: '请选择匹配类型', trigger: 'change' }
@@ -335,6 +449,17 @@ function openCreateDialog() {
   dialogVisible.value = true
 }
 
+function openBatchDialog() {
+  batchFormData.patterns = ''
+  batchFormData.match_type = 'exact'
+  batchFormData.action_type = 'block'
+  batchFormData.action_value = ''
+  batchFormData.priority = 0
+  batchFormData.description = ''
+  batchFormData.enabled = true
+  batchDialogVisible.value = true
+}
+
 function openEditDialog(rule: RewriteRule) {
   isEditing.value = true
   editingId.value = rule.id
@@ -376,6 +501,37 @@ async function submitForm() {
       ElMessage.error(message)
     } finally {
       submitting.value = false
+    }
+  })
+}
+
+async function submitBatchForm() {
+  if (!batchFormRef.value) return
+  
+  await batchFormRef.value.validate(async (valid) => {
+    if (!valid) return
+    
+    batchSubmitting.value = true
+    try {
+      const payload = {
+        patterns: batchFormData.patterns,
+        match_type: batchFormData.match_type,
+        action_type: batchFormData.action_type,
+        action_value: batchFormData.action_type === 'block' ? null : batchFormData.action_value || null,
+        priority: batchFormData.priority,
+        enabled: batchFormData.enabled,
+        description: batchFormData.description || null
+      }
+      
+      const response = await api.post('/api/rewrite/batch', payload)
+      ElMessage.success(`成功创建 ${response.data.created} 条规则`)
+      batchDialogVisible.value = false
+      fetchRules()
+    } catch (error: any) {
+      const message = error.response?.data?.message || '批量创建失败'
+      ElMessage.error(message)
+    } finally {
+      batchSubmitting.value = false
     }
   })
 }
@@ -441,6 +597,17 @@ onMounted(() => {
   margin: 0;
   font-size: 14px;
   color: #909399;
+}
+
+.header-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.form-hint {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
 }
 
 /* 统计卡片 */

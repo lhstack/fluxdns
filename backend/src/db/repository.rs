@@ -328,10 +328,45 @@ impl RewriteRuleRepository {
 
         Ok(result.rows_affected() > 0)
     }
+
+    /// Batch create rewrite rules
+    /// Returns the number of rules created
+    pub async fn batch_create(&self, rules: Vec<CreateRewriteRule>) -> Result<i64> {
+        if rules.is_empty() {
+            return Ok(0);
+        }
+
+        let now = Utc::now();
+        let mut count = 0i64;
+
+        // Use transaction for batch insert
+        let mut tx = self.pool.begin().await?;
+
+        for rule in rules {
+            sqlx::query(
+                r#"
+                INSERT INTO rewrite_rules (pattern, match_type, action_type, action_value, priority, enabled, description, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(&rule.pattern)
+            .bind(&rule.match_type)
+            .bind(&rule.action_type)
+            .bind(&rule.action_value)
+            .bind(rule.priority)
+            .bind(rule.enabled)
+            .bind(&rule.description)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            count += 1;
+        }
+
+        tx.commit().await?;
+        Ok(count)
+    }
 }
-
-
-/// Repository for upstream servers
 pub struct UpstreamServerRepository {
     pool: SqlitePool,
 }

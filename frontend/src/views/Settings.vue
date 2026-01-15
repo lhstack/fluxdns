@@ -4,7 +4,7 @@
     <div class="page-header">
       <div class="header-left">
         <h1>系统设置</h1>
-        <p class="subtitle">配置查询策略，查看系统状态和健康检查</p>
+        <p class="subtitle">配置查询策略、记录类型开关，查看系统状态和健康检查</p>
       </div>
       <el-button type="primary" size="large" @click="refreshAll">
         <el-icon><Refresh /></el-icon>
@@ -60,7 +60,7 @@
       </el-col>
     </el-row>
 
-    <el-row :gutter="20">
+    <el-row :gutter="20" class="equal-height-row">
       <!-- 查询策略 -->
       <el-col :xs="24" :md="12">
         <el-card class="strategy-card" shadow="never">
@@ -114,6 +114,49 @@
         </el-card>
       </el-col>
 
+      <!-- 记录类型开关 -->
+      <el-col :xs="24" :md="12">
+        <el-card class="record-types-card" shadow="never">
+          <template #header>
+            <div class="card-header">
+              <div class="card-title">
+                <el-icon><Switch /></el-icon>
+                <span>记录类型开关</span>
+              </div>
+              <el-button type="primary" link @click="fetchSettings" :loading="loadingSettings">
+                <el-icon><Refresh /></el-icon>
+                刷新
+              </el-button>
+            </div>
+          </template>
+          <div v-loading="loadingSettings">
+            <p class="section-desc">关闭某些记录类型后，对应的 DNS 查询将返回 NXDOMAIN</p>
+            <div class="record-type-list">
+              <div 
+                v-for="recordType in recordTypes" 
+                :key="recordType.type"
+                class="record-type-item"
+              >
+                <div class="record-type-info">
+                  <span class="record-type-name">{{ recordType.type }}</span>
+                  <span class="record-type-desc">{{ recordType.description }}</span>
+                </div>
+                <el-switch
+                  v-model="recordType.enabled"
+                  @change="saveRecordTypeSettings"
+                  :loading="savingSettings"
+                  inline-prompt
+                  active-text="开"
+                  inactive-text="关"
+                />
+              </div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="20" style="margin-top: 20px;" class="equal-height-row">
       <!-- 系统状态 -->
       <el-col :xs="24" :md="12">
         <el-card class="status-card" shadow="never">
@@ -162,78 +205,74 @@
           </div>
         </el-card>
       </el-col>
-    </el-row>
 
-    <!-- 健康检查 -->
-    <el-card class="health-card" shadow="never">
-      <template #header>
-        <div class="card-header">
-          <div class="card-title">
-            <el-icon><FirstAidKit /></el-icon>
-            <span>健康检查</span>
+      <!-- 健康检查 -->
+      <el-col :xs="24" :md="12">
+        <el-card class="health-card" shadow="never">
+          <template #header>
+            <div class="card-header">
+              <div class="card-title">
+                <el-icon><FirstAidKit /></el-icon>
+                <span>健康检查</span>
+              </div>
+              <el-button type="primary" link @click="fetchHealth">
+                <el-icon><Refresh /></el-icon>
+                检查
+              </el-button>
+            </div>
+          </template>
+          <div v-loading="loadingHealth">
+            <div class="health-list">
+              <div class="health-item" :class="{ 'is-healthy': health.database }">
+                <div class="health-icon" :style="{ background: health.database ? 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)' : 'linear-gradient(135deg, #f5576c 0%, #f093fb 100%)' }">
+                  <el-icon><Coin /></el-icon>
+                </div>
+                <div class="health-info">
+                  <span class="health-label">数据库</span>
+                  <span class="health-status" :class="{ 'is-ok': health.database }">
+                    {{ health.database ? '正常' : '异常' }}
+                  </span>
+                </div>
+                <el-icon class="health-check-icon" :class="{ 'is-ok': health.database }">
+                  <CircleCheck v-if="health.database" />
+                  <CircleClose v-else />
+                </el-icon>
+              </div>
+              <div class="health-item" :class="{ 'is-healthy': health.cache }">
+                <div class="health-icon" :style="{ background: health.cache ? 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)' : 'linear-gradient(135deg, #f5576c 0%, #f093fb 100%)' }">
+                  <el-icon><Box /></el-icon>
+                </div>
+                <div class="health-info">
+                  <span class="health-label">缓存</span>
+                  <span class="health-status" :class="{ 'is-ok': health.cache }">
+                    {{ health.cache ? '正常' : '异常' }}
+                  </span>
+                </div>
+                <el-icon class="health-check-icon" :class="{ 'is-ok': health.cache }">
+                  <CircleCheck v-if="health.cache" />
+                  <CircleClose v-else />
+                </el-icon>
+              </div>
+              <div class="health-item" :class="{ 'is-healthy': health.upstreams }">
+                <div class="health-icon" :style="{ background: health.upstreams ? 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)' : 'linear-gradient(135deg, #f5576c 0%, #f093fb 100%)' }">
+                  <el-icon><Connection /></el-icon>
+                </div>
+                <div class="health-info">
+                  <span class="health-label">上游服务器</span>
+                  <span class="health-status" :class="{ 'is-ok': health.upstreams }">
+                    {{ health.upstreams ? '正常' : '无可用' }}
+                  </span>
+                </div>
+                <el-icon class="health-check-icon" :class="{ 'is-ok': health.upstreams }">
+                  <CircleCheck v-if="health.upstreams" />
+                  <CircleClose v-else />
+                </el-icon>
+              </div>
+            </div>
           </div>
-          <el-button type="primary" link @click="fetchHealth">
-            <el-icon><Refresh /></el-icon>
-            检查
-          </el-button>
-        </div>
-      </template>
-      <div v-loading="loadingHealth">
-        <el-row :gutter="24">
-          <el-col :xs="24" :sm="8">
-            <div class="health-item" :class="{ 'is-healthy': health.database }">
-              <div class="health-icon" :style="{ background: health.database ? 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)' : 'linear-gradient(135deg, #f5576c 0%, #f093fb 100%)' }">
-                <el-icon><Coin /></el-icon>
-              </div>
-              <div class="health-info">
-                <span class="health-label">数据库</span>
-                <span class="health-status" :class="{ 'is-ok': health.database }">
-                  {{ health.database ? '正常' : '异常' }}
-                </span>
-              </div>
-              <el-icon class="health-check-icon" :class="{ 'is-ok': health.database }">
-                <CircleCheck v-if="health.database" />
-                <CircleClose v-else />
-              </el-icon>
-            </div>
-          </el-col>
-          <el-col :xs="24" :sm="8">
-            <div class="health-item" :class="{ 'is-healthy': health.cache }">
-              <div class="health-icon" :style="{ background: health.cache ? 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)' : 'linear-gradient(135deg, #f5576c 0%, #f093fb 100%)' }">
-                <el-icon><Box /></el-icon>
-              </div>
-              <div class="health-info">
-                <span class="health-label">缓存</span>
-                <span class="health-status" :class="{ 'is-ok': health.cache }">
-                  {{ health.cache ? '正常' : '异常' }}
-                </span>
-              </div>
-              <el-icon class="health-check-icon" :class="{ 'is-ok': health.cache }">
-                <CircleCheck v-if="health.cache" />
-                <CircleClose v-else />
-              </el-icon>
-            </div>
-          </el-col>
-          <el-col :xs="24" :sm="8">
-            <div class="health-item" :class="{ 'is-healthy': health.upstreams }">
-              <div class="health-icon" :style="{ background: health.upstreams ? 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)' : 'linear-gradient(135deg, #f5576c 0%, #f093fb 100%)' }">
-                <el-icon><Connection /></el-icon>
-              </div>
-              <div class="health-info">
-                <span class="health-label">上游服务器</span>
-                <span class="health-status" :class="{ 'is-ok': health.upstreams }">
-                  {{ health.upstreams ? '正常' : '无可用' }}
-                </span>
-              </div>
-              <el-icon class="health-check-icon" :class="{ 'is-ok': health.upstreams }">
-                <CircleCheck v-if="health.upstreams" />
-                <CircleClose v-else />
-              </el-icon>
-            </div>
-          </el-col>
-        </el-row>
-      </div>
-    </el-card>
+        </el-card>
+      </el-col>
+    </el-row>
   </div>
 </template>
 
@@ -242,7 +281,7 @@ import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { 
   Refresh, Timer, DataAnalysis, Box, Connection, Setting, Check,
-  Monitor, FirstAidKit, Coin, CircleCheck, CircleClose
+  Monitor, FirstAidKit, Coin, CircleCheck, CircleClose, Switch
 } from '@element-plus/icons-vue'
 import api from '../api'
 
@@ -314,6 +353,26 @@ const health = ref<HealthCheck>({
 })
 const loadingHealth = ref(false)
 
+// Record type settings
+interface RecordTypeItem {
+  type: string
+  description: string
+  enabled: boolean
+}
+
+const recordTypes = ref<RecordTypeItem[]>([
+  { type: 'A', description: 'IPv4 地址记录', enabled: true },
+  { type: 'AAAA', description: 'IPv6 地址记录', enabled: true },
+  { type: 'CNAME', description: '别名记录', enabled: true },
+  { type: 'MX', description: '邮件交换记录', enabled: true },
+  { type: 'TXT', description: '文本记录', enabled: true },
+  { type: 'PTR', description: '反向解析记录', enabled: true },
+  { type: 'NS', description: '域名服务器记录', enabled: true },
+])
+const loadingSettings = ref(false)
+const savingSettings = ref(false)
+let saveSettingsTimer: ReturnType<typeof setTimeout> | null = null
+
 const strategyLabels: Record<string, string> = {
   concurrent: '并发查询',
   fastest: '最快响应',
@@ -356,6 +415,50 @@ function refreshAll() {
   fetchStrategy()
   fetchStatus()
   fetchHealth()
+  fetchSettings()
+}
+
+async function fetchSettings() {
+  loadingSettings.value = true
+  try {
+    const response = await api.get('/api/settings')
+    const disabledTypes = response.data.disabled_record_types || []
+    // Update enabled status based on disabled types
+    recordTypes.value.forEach(rt => {
+      rt.enabled = !disabledTypes.includes(rt.type)
+    })
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.message || '获取设置失败')
+  } finally {
+    loadingSettings.value = false
+  }
+}
+
+async function saveRecordTypeSettings() {
+  // 防抖：快速切换多个开关时，只在最后一次操作后保存
+  if (saveSettingsTimer) {
+    clearTimeout(saveSettingsTimer)
+  }
+  
+  saveSettingsTimer = setTimeout(async () => {
+    savingSettings.value = true
+    try {
+      const disabledTypes = recordTypes.value
+        .filter(rt => !rt.enabled)
+        .map(rt => rt.type)
+      
+      await api.put('/api/settings', {
+        disabled_record_types: disabledTypes
+      })
+      ElMessage.success('设置已保存')
+    } catch (error: any) {
+      ElMessage.error(error.response?.data?.message || '保存设置失败')
+      // Revert on error
+      fetchSettings()
+    } finally {
+      savingSettings.value = false
+    }
+  }, 500)
 }
 
 async function fetchStrategy() {
@@ -417,6 +520,7 @@ onMounted(() => {
   fetchStrategy()
   fetchStatus()
   fetchHealth()
+  fetchSettings()
 })
 </script>
 
@@ -499,10 +603,73 @@ onMounted(() => {
 /* 卡片通用样式 */
 .strategy-card,
 .status-card,
-.health-card {
+.health-card,
+.record-types-card {
   border-radius: 12px;
   border: none;
+  margin-bottom: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.strategy-card :deep(.el-card__body),
+.status-card :deep(.el-card__body),
+.health-card :deep(.el-card__body),
+.record-types-card :deep(.el-card__body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 策略卡片内容布局 */
+.strategy-card :deep(.el-card__body) > div {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.strategy-options {
+  flex: 1;
   margin-bottom: 20px;
+}
+
+/* 记录类型卡片内容布局 */
+.record-types-card :deep(.el-card__body) > div {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.record-type-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 状态卡片内容布局 */
+.status-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+/* 健康检查卡片内容布局 */
+.health-card :deep(.el-card__body) > div {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.health-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  justify-content: space-between;
 }
 
 .card-header {
@@ -546,25 +713,23 @@ onMounted(() => {
   border-radius: 8px;
 }
 
-.strategy-options {
-  margin-bottom: 20px;
-}
-
 .strategy-radio-group {
-  width: 100%;
+  height: 100%;
 }
 
 .strategy-item {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 16px;
+  padding: 10px 16px;
   background: #f8f9fa;
   border-radius: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 6px;
   cursor: pointer;
   transition: all 0.3s;
   border: 2px solid transparent;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .strategy-item:hover {
@@ -579,7 +744,8 @@ onMounted(() => {
 .strategy-content {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  align-items: flex-start;
+  text-align: left;
 }
 
 .strategy-name {
@@ -596,15 +762,10 @@ onMounted(() => {
 
 .save-btn {
   width: 100%;
+  margin-top: auto;
 }
 
 /* 状态卡片 */
-.status-content {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
 .status-item {
   display: flex;
   justify-content: space-between;
@@ -630,6 +791,45 @@ onMounted(() => {
   font-size: 16px;
 }
 
+/* 记录类型开关 */
+.section-desc {
+  font-size: 13px;
+  color: #909399;
+  margin: 0 0 16px 0;
+}
+
+.record-type-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  transition: all 0.3s;
+}
+
+.record-type-item:hover {
+  background: #f0f2f5;
+}
+
+.record-type-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.record-type-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  font-family: 'Monaco', 'Menlo', monospace;
+}
+
+.record-type-desc {
+  font-size: 12px;
+  color: #909399;
+}
+
 /* 健康检查卡片 */
 .health-card {
   margin-top: 0;
@@ -639,7 +839,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 20px;
+  padding: 16px;
   background: #f8f9fa;
   border-radius: 12px;
   transition: all 0.3s;
@@ -712,5 +912,35 @@ onMounted(() => {
   .health-item {
     margin-bottom: 12px;
   }
+  
+  .equal-height-row {
+    margin-bottom: 20px;
+  }
+  
+  .equal-height-row .el-col {
+    margin-bottom: 20px;
+  }
+  
+  .strategy-card :deep(.el-card__body),
+  .record-types-card :deep(.el-card__body),
+  .status-card :deep(.el-card__body),
+  .health-card :deep(.el-card__body) {
+    min-height: auto;
+  }
+}
+
+/* 等高行 */
+.equal-height-row {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.equal-height-row > .el-col {
+  display: flex;
+}
+
+.equal-height-row > .el-col > .el-card {
+  flex: 1;
 }
 </style>

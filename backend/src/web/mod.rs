@@ -9,6 +9,7 @@ pub mod listeners;
 pub mod logs;
 pub mod records;
 pub mod rewrite;
+pub mod settings;
 pub mod static_files;
 pub mod status;
 pub mod strategy;
@@ -25,6 +26,7 @@ pub use records::{
     records_router, RecordsState,
 };
 pub use rewrite::{rewrite_router, RewriteState};
+pub use settings::{settings_router, SettingsState};
 pub use static_files::{fallback_handler, index_handler, static_handler};
 pub use status::{status_router, StatusState};
 pub use strategy::{strategy_router, StrategyState};

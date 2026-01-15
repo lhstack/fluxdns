@@ -469,6 +469,130 @@ pub async fn reload_rules(
     })))
 }
 
+/// Batch create rewrite rules request
+#[derive(Debug, Clone, Deserialize)]
+pub struct BatchCreateRequest {
+    /// List of domain patterns (one per line or comma-separated)
+    pub patterns: String,
+    /// Match type for all rules
+    #[serde(default = "default_match_type")]
+    pub match_type: String,
+    /// Action type for all rules
+    #[serde(default = "default_action_type")]
+    pub action_type: String,
+    /// Action value (for map_ip or map_domain)
+    pub action_value: Option<String>,
+    /// Priority for all rules
+    #[serde(default)]
+    pub priority: i32,
+    /// Whether rules are enabled
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    /// Description for all rules
+    pub description: Option<String>,
+}
+
+fn default_match_type() -> String {
+    "exact".to_string()
+}
+
+fn default_action_type() -> String {
+    "block".to_string()
+}
+
+/// Batch create response
+#[derive(Debug, Serialize)]
+pub struct BatchCreateResponse {
+    pub created: i64,
+    pub message: String,
+}
+
+/// Batch create rewrite rules
+///
+/// POST /api/rewrite/batch
+/// 
+/// Accepts a list of domain patterns (newline or comma separated) and creates
+/// rewrite rules for each one with the same action.
+pub async fn batch_create_rules(
+    State(state): State<RewriteState>,
+    Json(request): Json<BatchCreateRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Validate match_type
+    if let Err(e) = validate_match_type(&request.match_type) {
+        return Err(ApiError {
+            code: "BAD_REQUEST".to_string(),
+            message: e,
+            details: None,
+        });
+    }
+
+    // Validate action
+    if let Err(e) = validate_action(&request.action_type, &request.action_value) {
+        return Err(ApiError {
+            code: "BAD_REQUEST".to_string(),
+            message: e,
+            details: None,
+        });
+    }
+
+    // Parse patterns (split by newline, comma, or semicolon)
+    let patterns: Vec<String> = request.patterns
+        .split(|c| c == '\n' || c == ',' || c == ';')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if patterns.is_empty() {
+        return Err(ApiError {
+            code: "BAD_REQUEST".to_string(),
+            message: "No valid patterns provided".to_string(),
+            details: None,
+        });
+    }
+
+    // Validate each pattern
+    for pattern in &patterns {
+        if let Err(e) = validate_pattern(pattern, &request.match_type) {
+            return Err(ApiError {
+                code: "BAD_REQUEST".to_string(),
+                message: format!("Invalid pattern '{}': {}", pattern, e),
+                details: None,
+            });
+        }
+    }
+
+    // Create rules
+    let rules: Vec<crate::db::CreateRewriteRule> = patterns
+        .into_iter()
+        .map(|pattern| crate::db::CreateRewriteRule {
+            pattern,
+            match_type: request.match_type.to_lowercase(),
+            action_type: request.action_type.to_lowercase(),
+            action_value: request.action_value.clone(),
+            priority: request.priority,
+            enabled: request.enabled,
+            description: request.description.clone(),
+        })
+        .collect();
+
+    let repo = state.db.rewrite_rules();
+    let created = repo.batch_create(rules).await.map_err(|e| ApiError {
+        code: "INTERNAL_ERROR".to_string(),
+        message: format!("Failed to create rewrite rules: {}", e),
+        details: None,
+    })?;
+
+    // Reload rules in the rewrite engine
+    if let Err(e) = state.rewrite_engine.reload_rules().await {
+        tracing::warn!("Failed to reload rewrite rules: {}", e);
+    }
+
+    Ok((StatusCode::CREATED, Json(BatchCreateResponse {
+        created,
+        message: format!("Successfully created {} rewrite rules", created),
+    })))
+}
+
 /// Build the rewrite rules API router
 pub fn rewrite_router(state: RewriteState) -> axum::Router {
     use axum::routing::{get, post};
@@ -476,6 +600,7 @@ pub fn rewrite_router(state: RewriteState) -> axum::Router {
     axum::Router::new()
         .route("/", get(list_rules).post(create_rule))
         .route("/reload", post(reload_rules))
+        .route("/batch", post(batch_create_rules))
         .route("/:id", get(get_rule).put(update_rule).delete(delete_rule))
         .with_state(state)
 }

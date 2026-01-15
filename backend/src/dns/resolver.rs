@@ -125,17 +125,33 @@ impl DnsResolver {
     /// Resolve a DNS query
     ///
     /// This is the main entry point for DNS resolution. It follows this flow:
-    /// 1. Check rewrite rules
-    /// 2. If rewrite matches, apply the action
-    /// 3. Check local DNS records from database
-    /// 4. Otherwise, check cache
-    /// 5. If cache miss, query upstream via proxy
-    /// 6. Cache the response
+    /// 1. Check if record type is disabled
+    /// 2. Check rewrite rules
+    /// 3. If rewrite matches, apply the action
+    /// 4. Check local DNS records from database
+    /// 5. Otherwise, check cache
+    /// 6. If cache miss, query upstream via proxy
+    /// 7. Cache the response
     pub async fn resolve(&self, query: &DnsQuery) -> Result<ResolveResult> {
         let start = Instant::now();
         let mut metadata = QueryMetadata::default();
 
         info!("[DNS Query] {} {} (ID: {})", query.name, query.record_type, query.id);
+
+        // Step 0: Check if record type is disabled
+        if let Some(ref db) = self.db {
+            if self.is_record_type_disabled(db, &query.record_type.to_string()).await {
+                info!(
+                    "[DNS Result] {} {} | Disabled record type | {}ms",
+                    query.name, query.record_type, start.elapsed().as_millis()
+                );
+                metadata.response_time_ms = start.elapsed().as_millis() as u64;
+                return Ok(ResolveResult {
+                    response: DnsResponse::nxdomain(query.id),
+                    metadata,
+                });
+            }
+        }
 
         // Step 1: Check rewrite rules
         if let Some(rewrite_result) = self.rewrite_engine.check(&query.name).await {
@@ -222,6 +238,20 @@ impl DnsResolver {
             response,
             metadata,
         })
+    }
+
+    /// Check if a record type is disabled in settings
+    async fn is_record_type_disabled(&self, db: &Database, record_type: &str) -> bool {
+        match db.system_config().get("disabled_record_types").await {
+            Ok(Some(value)) => {
+                if let Ok(disabled_types) = serde_json::from_str::<Vec<String>>(&value) {
+                    let upper = record_type.to_uppercase();
+                    return disabled_types.iter().any(|t| t.to_uppercase() == upper);
+                }
+                false
+            }
+            _ => false,
+        }
     }
 
     /// Resolve a DNS query with client IP for logging

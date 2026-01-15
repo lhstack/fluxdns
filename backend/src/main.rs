@@ -31,9 +31,9 @@ use crate::dns::server::{DohDnsServer, UdpDnsServer};
 use crate::log::{LogConfig, LogManager};
 use crate::web::{
     auth_middleware, cache_router, dns_query_router, fallback_handler, index_handler,
-    logs_router, records_router, rewrite_router, static_handler, status_router,
+    logs_router, records_router, rewrite_router, settings_router, static_handler, status_router,
     strategy_router, upstreams_router, AuthService, AuthState, CacheState, DnsQueryState,
-    LogsState, RecordsState, RewriteState, StatusState, StrategyState, UpstreamsState,
+    LogsState, RecordsState, RewriteState, SettingsState, StatusState, StrategyState, UpstreamsState,
 };
 
 /// Application state shared across all components
@@ -219,6 +219,9 @@ async fn main() -> Result<()> {
     let listeners_routes = crate::web::listeners_router(crate::web::ListenersState {
         db: db.clone(),
     });
+    let settings_routes = settings_router(SettingsState {
+        db: db.clone(),
+    });
     let doh_routes = doh_server.router();
 
     // Create protected API router (requires authentication)
@@ -232,6 +235,7 @@ async fn main() -> Result<()> {
         .nest("/api/logs", logs_routes)
         .nest("/api/status", status_routes)
         .nest("/api/listeners", listeners_routes)
+        .nest("/api/settings", settings_routes)
         .layer(middleware::from_fn_with_state(auth_state.clone(), auth_middleware));
 
     // Create login router with AuthState
