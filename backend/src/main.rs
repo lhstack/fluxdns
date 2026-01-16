@@ -148,6 +148,45 @@ async fn main() -> Result<()> {
     // Start DNS servers based on database configuration
     let mut handles = Vec::new();
 
+    // Start auto cleanup task for query logs
+    let cleanup_db = db.clone();
+    handles.push(tokio::spawn(async move {
+        // Run cleanup check every hour
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3600));
+        loop {
+            interval.tick().await;
+            
+            // Check if auto cleanup is enabled
+            let config = cleanup_db.system_config();
+            let enabled = match config.get("log_auto_cleanup_enabled").await {
+                Ok(Some(v)) => v == "true",
+                _ => false,
+            };
+            
+            if !enabled {
+                continue;
+            }
+            
+            // Get retention days
+            let retention_days = match config.get("log_retention_days").await {
+                Ok(Some(v)) => v.parse::<i64>().unwrap_or(30),
+                _ => 30,
+            };
+            
+            // Perform cleanup
+            match cleanup_db.query_logs().delete_old(retention_days).await {
+                Ok(deleted) => {
+                    if deleted > 0 {
+                        info!("Auto cleanup: deleted {} query logs older than {} days", deleted, retention_days);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Auto cleanup failed: {}", e);
+                }
+            }
+        }
+    }));
+
     // Load enabled listeners from database
     let listeners = db.server_listeners().list_enabled().await?;
     

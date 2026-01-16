@@ -3,7 +3,16 @@
     <el-aside width="240px" class="sidebar">
       <!-- Logo -->
       <div class="logo">
-        <img src="/logo.svg" alt="FluxDNS" class="logo-icon" />
+        <div class="logo-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+            <circle cx="32" cy="32" r="30" fill="#667eea"/>
+            <path d="M12 32 Q22 22, 32 32 T52 32" stroke="#fff" stroke-width="4" fill="none" stroke-linecap="round"/>
+            <path d="M12 40 Q22 30, 32 40 T52 40" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.7"/>
+            <path d="M12 24 Q22 34, 32 24 T52 24" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.7"/>
+            <circle cx="16" cy="32" r="3" fill="#fff"/>
+            <circle cx="48" cy="32" r="3" fill="#fff"/>
+          </svg>
+        </div>
         <span class="logo-text">FluxDNS</span>
       </div>
 
@@ -149,7 +158,11 @@ function handleLogout() {
 .logo-icon {
   width: 36px;
   height: 36px;
-  filter: brightness(0) invert(1);
+}
+
+.logo-icon svg {
+  width: 100%;
+  height: 100%;
 }
 
 .logo-text {

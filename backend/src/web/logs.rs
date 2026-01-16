@@ -171,14 +171,148 @@ pub async fn cleanup_logs(
     })))
 }
 
+/// Delete logs before a specific date
+///
+/// DELETE /api/logs/cleanup/before
+#[derive(Debug, Clone, Deserialize)]
+pub struct CleanupBeforeDateParams {
+    pub before_date: String,
+}
+
+pub async fn cleanup_logs_before_date(
+    State(state): State<LogsState>,
+    Query(params): Query<CleanupBeforeDateParams>,
+) -> Result<impl IntoResponse, ApiError> {
+    let repo = state.db.query_logs();
+
+    let deleted = repo.delete_before_date(&params.before_date).await.map_err(|e| ApiError {
+        code: "INTERNAL_ERROR".to_string(),
+        message: format!("Failed to cleanup query logs: {}", e),
+        details: None,
+    })?;
+
+    Ok(Json(serde_json::json!({
+        "message": format!("Deleted {} log entries before {}", deleted, params.before_date),
+        "deleted_count": deleted
+    })))
+}
+
+/// Delete all query logs
+///
+/// DELETE /api/logs/cleanup/all
+pub async fn cleanup_all_logs(
+    State(state): State<LogsState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let repo = state.db.query_logs();
+
+    let deleted = repo.delete_all().await.map_err(|e| ApiError {
+        code: "INTERNAL_ERROR".to_string(),
+        message: format!("Failed to delete all query logs: {}", e),
+        details: None,
+    })?;
+
+    Ok(Json(serde_json::json!({
+        "message": format!("Deleted all {} log entries", deleted),
+        "deleted_count": deleted
+    })))
+}
+
+/// Get log retention settings
+///
+/// GET /api/logs/retention
+pub async fn get_retention_settings(
+    State(state): State<LogsState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let config = state.db.system_config();
+    
+    let auto_cleanup_enabled = config.get("log_auto_cleanup_enabled").await
+        .map_err(|e| ApiError {
+            code: "INTERNAL_ERROR".to_string(),
+            message: format!("Failed to get config: {}", e),
+            details: None,
+        })?
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    
+    let retention_days = config.get("log_retention_days").await
+        .map_err(|e| ApiError {
+            code: "INTERNAL_ERROR".to_string(),
+            message: format!("Failed to get config: {}", e),
+            details: None,
+        })?
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(30);
+
+    let oldest_date = state.db.query_logs().get_oldest_date().await
+        .map_err(|e| ApiError {
+            code: "INTERNAL_ERROR".to_string(),
+            message: format!("Failed to get oldest date: {}", e),
+            details: None,
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "auto_cleanup_enabled": auto_cleanup_enabled,
+        "retention_days": retention_days,
+        "oldest_log_date": oldest_date
+    })))
+}
+
+/// Update log retention settings
+///
+/// PUT /api/logs/retention
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateRetentionParams {
+    pub auto_cleanup_enabled: Option<bool>,
+    pub retention_days: Option<i64>,
+}
+
+pub async fn update_retention_settings(
+    State(state): State<LogsState>,
+    Json(params): Json<UpdateRetentionParams>,
+) -> Result<impl IntoResponse, ApiError> {
+    let config = state.db.system_config();
+    
+    if let Some(enabled) = params.auto_cleanup_enabled {
+        config.set("log_auto_cleanup_enabled", &enabled.to_string()).await
+            .map_err(|e| ApiError {
+                code: "INTERNAL_ERROR".to_string(),
+                message: format!("Failed to save config: {}", e),
+                details: None,
+            })?;
+    }
+    
+    if let Some(days) = params.retention_days {
+        if days < 1 {
+            return Err(ApiError {
+                code: "BAD_REQUEST".to_string(),
+                message: "Retention days must be at least 1".to_string(),
+                details: None,
+            });
+        }
+        config.set("log_retention_days", &days.to_string()).await
+            .map_err(|e| ApiError {
+                code: "INTERNAL_ERROR".to_string(),
+                message: format!("Failed to save config: {}", e),
+                details: None,
+            })?;
+    }
+
+    // Return updated settings
+    get_retention_settings(State(state)).await
+}
+
 /// Build the logs API router
 pub fn logs_router(state: LogsState) -> axum::Router {
-    use axum::routing::{delete, get};
+    use axum::routing::{delete, get, put};
 
     axum::Router::new()
         .route("/", get(list_logs))
         .route("/stats", get(get_stats))
         .route("/cleanup", delete(cleanup_logs))
+        .route("/cleanup/before", delete(cleanup_logs_before_date))
+        .route("/cleanup/all", delete(cleanup_all_logs))
+        .route("/retention", get(get_retention_settings))
+        .route("/retention", put(update_retention_settings))
         .with_state(state)
 }
 

@@ -300,12 +300,7 @@ impl DnsResolver {
         use std::str::FromStr;
 
         let record_type_str = query.record_type.to_string();
-        let mut records = db.dns_records().get_by_name_and_type(&query.name, &record_type_str).await?;
-        if records.is_empty() {
-            // Use wildcard-aware query method
-            records = db.dns_records().get_by_name_and_type_with_wildcard(&query.name, &record_type_str).await?;
-        }
-
+        let records = db.dns_records().get_by_name_and_type_with_wildcard(&query.name, &record_type_str).await?;
         if records.is_empty() {
             return Ok(None);
         }

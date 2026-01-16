@@ -156,6 +156,101 @@
       </el-col>
     </el-row>
 
+    <!-- 日志管理 -->
+    <el-row :gutter="20" style="margin-top: 20px;">
+      <el-col :span="24">
+        <el-card class="log-cleanup-card" shadow="never">
+          <template #header>
+            <div class="card-header">
+              <div class="card-title">
+                <el-icon><Delete /></el-icon>
+                <span>查询日志管理</span>
+              </div>
+              <el-button type="primary" link @click="fetchRetentionSettings" :loading="loadingRetention">
+                <el-icon><Refresh /></el-icon>
+                刷新
+              </el-button>
+            </div>
+          </template>
+          <div v-loading="loadingRetention">
+            <el-row :gutter="24">
+              <!-- 手动清理 -->
+              <el-col :xs="24" :md="12">
+                <div class="cleanup-section">
+                  <h4 class="section-title">手动清理</h4>
+                  <p class="section-desc">选择日期，清理该日期之前的所有查询日志</p>
+                  <div class="cleanup-form">
+                    <el-date-picker
+                      v-model="cleanupBeforeDate"
+                      type="date"
+                      placeholder="选择日期"
+                      format="YYYY-MM-DD"
+                      value-format="YYYY-MM-DD"
+                      :disabled-date="disabledDate"
+                      style="width: 200px;"
+                    />
+                    <el-button 
+                      type="warning" 
+                      @click="cleanupBeforeDateAction"
+                      :loading="cleaningLogs"
+                      :disabled="!cleanupBeforeDate"
+                    >
+                      <el-icon><Delete /></el-icon>
+                      清理日志
+                    </el-button>
+                    <el-button 
+                      type="danger" 
+                      @click="cleanupAllLogsAction"
+                      :loading="cleaningLogs"
+                    >
+                      <el-icon><DeleteFilled /></el-icon>
+                      清空全部
+                    </el-button>
+                  </div>
+                  <div class="oldest-log-info" v-if="retentionSettings.oldest_log_date">
+                    <el-icon><InfoFilled /></el-icon>
+                    <span>最早日志时间: {{ formatDate(retentionSettings.oldest_log_date) }}</span>
+                  </div>
+                </div>
+              </el-col>
+              <!-- 自动清理 -->
+              <el-col :xs="24" :md="12">
+                <div class="cleanup-section">
+                  <h4 class="section-title">自动清理</h4>
+                  <p class="section-desc">启用后，系统将自动清理超过保留天数的日志</p>
+                  <div class="auto-cleanup-form">
+                    <div class="auto-cleanup-toggle">
+                      <span class="toggle-label">启用自动清理</span>
+                      <el-switch
+                        v-model="retentionSettings.auto_cleanup_enabled"
+                        @change="saveRetentionSettings"
+                        :loading="savingRetention"
+                        inline-prompt
+                        active-text="开"
+                        inactive-text="关"
+                      />
+                    </div>
+                    <div class="retention-days-input">
+                      <span class="input-label">保留天数</span>
+                      <el-input-number
+                        v-model="retentionSettings.retention_days"
+                        :min="1"
+                        :max="365"
+                        :disabled="!retentionSettings.auto_cleanup_enabled"
+                        @change="saveRetentionSettings"
+                        style="width: 140px;"
+                      />
+                      <span class="input-suffix">天</span>
+                    </div>
+                  </div>
+                </div>
+              </el-col>
+            </el-row>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
     <el-row :gutter="20" style="margin-top: 20px;" class="equal-height-row">
       <!-- 系统状态 -->
       <el-col :xs="24" :md="12">
@@ -278,10 +373,11 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { 
   Refresh, Timer, DataAnalysis, Box, Connection, Setting, Check,
-  Monitor, FirstAidKit, Coin, CircleCheck, CircleClose, Switch
+  Monitor, FirstAidKit, Coin, CircleCheck, CircleClose, Switch,
+  Delete, DeleteFilled, InfoFilled
 } from '@element-plus/icons-vue'
 import api from '../api'
 
@@ -373,6 +469,24 @@ const loadingSettings = ref(false)
 const savingSettings = ref(false)
 let saveSettingsTimer: ReturnType<typeof setTimeout> | null = null
 
+// Log retention settings
+interface RetentionSettings {
+  auto_cleanup_enabled: boolean
+  retention_days: number
+  oldest_log_date: string | null
+}
+
+const retentionSettings = ref<RetentionSettings>({
+  auto_cleanup_enabled: false,
+  retention_days: 30,
+  oldest_log_date: null
+})
+const loadingRetention = ref(false)
+const savingRetention = ref(false)
+const cleaningLogs = ref(false)
+const cleanupBeforeDate = ref<string>('')
+let saveRetentionTimer: ReturnType<typeof setTimeout> | null = null
+
 const strategyLabels: Record<string, string> = {
   concurrent: '并发查询',
   fastest: '最快响应',
@@ -416,6 +530,7 @@ function refreshAll() {
   fetchStatus()
   fetchHealth()
   fetchSettings()
+  fetchRetentionSettings()
 }
 
 async function fetchSettings() {
@@ -516,11 +631,119 @@ async function fetchHealth() {
   }
 }
 
+// Log retention methods
+async function fetchRetentionSettings() {
+  loadingRetention.value = true
+  try {
+    const response = await api.get('/api/logs/retention')
+    retentionSettings.value = response.data
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.message || '获取日志保留设置失败')
+  } finally {
+    loadingRetention.value = false
+  }
+}
+
+async function saveRetentionSettings() {
+  // 防抖
+  if (saveRetentionTimer) {
+    clearTimeout(saveRetentionTimer)
+  }
+  
+  saveRetentionTimer = setTimeout(async () => {
+    savingRetention.value = true
+    try {
+      await api.put('/api/logs/retention', {
+        auto_cleanup_enabled: retentionSettings.value.auto_cleanup_enabled,
+        retention_days: retentionSettings.value.retention_days
+      })
+      ElMessage.success('日志保留设置已保存')
+    } catch (error: any) {
+      ElMessage.error(error.response?.data?.message || '保存设置失败')
+      fetchRetentionSettings()
+    } finally {
+      savingRetention.value = false
+    }
+  }, 500)
+}
+
+async function cleanupBeforeDateAction() {
+  if (!cleanupBeforeDate.value) return
+  
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除 ${cleanupBeforeDate.value} 之前的所有查询日志吗？此操作不可恢复。`,
+      '确认清理',
+      {
+        confirmButtonText: '确定清理',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    
+    cleaningLogs.value = true
+    const response = await api.delete('/api/logs/cleanup/before', {
+      params: { before_date: cleanupBeforeDate.value }
+    })
+    ElMessage.success(`已删除 ${response.data.deleted_count} 条日志`)
+    cleanupBeforeDate.value = ''
+    fetchRetentionSettings()
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      ElMessage.error(error.response?.data?.message || '清理日志失败')
+    }
+  } finally {
+    cleaningLogs.value = false
+  }
+}
+
+async function cleanupAllLogsAction() {
+  try {
+    await ElMessageBox.confirm(
+      '确定要删除所有查询日志吗？此操作不可恢复！',
+      '确认清空',
+      {
+        confirmButtonText: '确定清空',
+        cancelButtonText: '取消',
+        type: 'error'
+      }
+    )
+    
+    cleaningLogs.value = true
+    const response = await api.delete('/api/logs/cleanup/all')
+    ElMessage.success(`已删除 ${response.data.deleted_count} 条日志`)
+    fetchRetentionSettings()
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      ElMessage.error(error.response?.data?.message || '清空日志失败')
+    }
+  } finally {
+    cleaningLogs.value = false
+  }
+}
+
+function disabledDate(time: Date) {
+  return time.getTime() > Date.now()
+}
+
+function formatDate(dateStr: string | null): string {
+  if (!dateStr) return '-'
+  const date = new Date(dateStr)
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
 onMounted(() => {
   fetchStrategy()
   fetchStatus()
   fetchHealth()
   fetchSettings()
+  fetchRetentionSettings()
 })
 </script>
 
@@ -942,5 +1165,88 @@ onMounted(() => {
 
 .equal-height-row > .el-col > .el-card {
   flex: 1;
+}
+
+/* 日志清理卡片 */
+.log-cleanup-card {
+  border-radius: 12px;
+  border: none;
+}
+
+.cleanup-section {
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 12px;
+  height: 100%;
+}
+
+.section-title {
+  margin: 0 0 8px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.cleanup-form {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.oldest-log-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #909399;
+  padding: 8px 12px;
+  background: #fff;
+  border-radius: 6px;
+}
+
+.oldest-log-info .el-icon {
+  color: #409eff;
+}
+
+.auto-cleanup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.auto-cleanup-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: #fff;
+  border-radius: 8px;
+}
+
+.toggle-label {
+  font-size: 14px;
+  color: #303133;
+}
+
+.retention-days-input {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #fff;
+  border-radius: 8px;
+}
+
+.input-label {
+  font-size: 14px;
+  color: #303133;
+  min-width: 70px;
+}
+
+.input-suffix {
+  font-size: 14px;
+  color: #909399;
 }
 </style>

@@ -116,8 +116,9 @@ impl DnsRecordRepository {
             ORDER BY 
                 CASE 
                     WHEN name = ? THEN 0 
-                    ELSE LENGTH(name) 
-                END DESC
+                    ELSE 1
+                END ASC,
+                LENGTH(name) DESC
             "#,
             placeholders.join(", ")
         );
@@ -662,6 +663,38 @@ impl QueryLogRepository {
         .await?;
 
         Ok(result.rows_affected())
+    }
+
+    /// Delete query logs before a specific date
+    pub async fn delete_before_date(&self, before_date: &str) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM query_logs WHERE created_at < ?",
+        )
+        .bind(before_date)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    /// Delete all query logs
+    pub async fn delete_all(&self) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM query_logs")
+            .execute(&self.pool)
+            .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    /// Get the oldest log date
+    pub async fn get_oldest_date(&self) -> Result<Option<String>> {
+        let result: Option<(String,)> = sqlx::query_as(
+            "SELECT MIN(created_at) FROM query_logs",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(result.and_then(|r| if r.0.is_empty() { None } else { Some(r.0) }))
     }
 
     /// Get query statistics
