@@ -66,14 +66,16 @@
 ## 快速开始
 
 ### Docker 部署 (推荐)
-
+`前置处理，解决权限问题`
+```shell
+mkdir -p data logs
+chown -R 1000:1000 data logs
+```
 支持架构: `linux/amd64`, `linux/arm64`
 
 #### Docker Compose
 
 ```yaml
-version: '3.8'
-
 services:
   fluxdns:
     image: lhstack/fluxdns:latest
@@ -88,6 +90,15 @@ services:
       - ADMIN_PASSWORD=admin
       - LOG_PATH=/app/logs
       - LOG_LEVEL=info
+    logging:
+      options:
+        max-file: "2"
+        max-size: '32k'
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: '16M'
     ports:
       - "8080:8080"
       - "53:53/udp"
