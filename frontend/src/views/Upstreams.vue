@@ -21,7 +21,7 @@
           </div>
           <div class="stat-info">
             <span class="stat-value">{{ pagination.total }}</span>
-            <span class="stat-label">服务器总数</span>
+            <span class="stat-label">服务器</span>
           </div>
         </div>
       </el-col>
@@ -32,7 +32,7 @@
           </div>
           <div class="stat-info">
             <span class="stat-value">{{ healthyCount }}</span>
-            <span class="stat-label">健康服务器</span>
+            <span class="stat-label">健康</span>
           </div>
         </div>
       </el-col>
@@ -43,7 +43,7 @@
           </div>
           <div class="stat-info">
             <span class="stat-value">{{ unhealthyCount }}</span>
-            <span class="stat-label">异常服务器</span>
+            <span class="stat-label">异常</span>
           </div>
         </div>
       </el-col>
@@ -54,7 +54,7 @@
           </div>
           <div class="stat-info">
             <span class="stat-value">{{ totalQueries }}</span>
-            <span class="stat-label">总查询次数</span>
+            <span class="stat-label">总查询</span>
           </div>
         </div>
       </el-col>
@@ -62,91 +62,94 @@
 
     <!-- 服务器表格 -->
     <el-card class="table-card" shadow="never">
-      <el-table :data="servers" v-loading="loading" stripe class="custom-table">
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column prop="name" label="名称" min-width="140">
-          <template #default="{ row }">
-            <span class="server-name">{{ row.name }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="address" label="地址" min-width="260">
-          <template #default="{ row }">
-            <span class="server-address">{{ row.address }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="protocol" label="协议" width="100">
-          <template #default="{ row }">
-            <el-tag :type="getProtocolTag(row.protocol)" effect="dark">
-              {{ row.protocol.toUpperCase() }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="timeout" label="超时" width="90">
-          <template #default="{ row }">
-            <span class="timeout-value">{{ row.timeout }}ms</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="90">
-          <template #default="{ row }">
-            <el-tag :type="getStatusTag(row)" effect="plain" size="small">
-              {{ getStatusLabel(row) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="enabled" label="启用" width="80">
-          <template #default="{ row }">
-            <el-switch
-              v-model="row.enabled"
-              @change="toggleEnabled(row)"
-              inline-prompt
-              active-text="启"
-              inactive-text="停"
-            />
-          </template>
-        </el-table-column>
-        <el-table-column label="统计" width="220">
-          <template #default="{ row }">
-            <div class="stats-cell">
-              <div class="stats-item">
-                <span class="stats-label">查询</span>
-                <span class="stats-value">{{ getServerStats(row.id)?.queries || 0 }}</span>
+      <div class="table-wrapper">
+        <el-table :data="servers" v-loading="loading" stripe class="custom-table">
+          <el-table-column prop="id" label="ID" width="60" class-name="hidden-xs-only" />
+          <el-table-column prop="name" label="名称" min-width="120">
+            <template #default="{ row }">
+              <span class="server-name">{{ row.name }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="address" label="地址" min-width="220">
+            <template #default="{ row }">
+              <span class="server-address">{{ row.address }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="protocol" label="协议" width="90">
+            <template #default="{ row }">
+              <el-tag :type="getProtocolTag(row.protocol)" effect="dark" size="small">
+                {{ row.protocol.toUpperCase() }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="timeout" label="超时" width="80" class-name="hidden-xs-only">
+            <template #default="{ row }">
+              <span class="timeout-value">{{ row.timeout }}ms</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="80">
+            <template #default="{ row }">
+              <el-tag :type="getStatusTag(row)" effect="plain" size="small">
+                {{ getStatusLabel(row) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="统计" width="220">
+            <template #default="{ row }">
+              <div class="stats-cell">
+                <div class="stats-item">
+                  <span class="stats-label">查询</span>
+                  <span class="stats-value">{{ getServerStats(row.id)?.queries || 0 }}</span>
+                </div>
+                <div class="stats-item">
+                  <span class="stats-label">成功率</span>
+                  <span class="stats-value" :class="getSuccessRateClass(getServerStats(row.id)?.success_rate)">
+                    {{ formatSuccessRate(getServerStats(row.id)?.success_rate) }}
+                  </span>
+                </div>
+                <div class="stats-item">
+                  <span class="stats-label">延迟</span>
+                  <span class="stats-value">{{ formatResponseTime(getServerStats(row.id)?.avg_response_time_ms) }}</span>
+                </div>
               </div>
-              <div class="stats-item">
-                <span class="stats-label">成功率</span>
-                <span class="stats-value" :class="getSuccessRateClass(getServerStats(row.id)?.success_rate)">
-                  {{ formatSuccessRate(getServerStats(row.id)?.success_rate) }}
-                </span>
-              </div>
-              <div class="stats-item">
-                <span class="stats-label">延迟</span>
-                <span class="stats-value">{{ formatResponseTime(getServerStats(row.id)?.avg_response_time_ms) }}</span>
-              </div>
-            </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="enabled" label="启用" width="70">
+            <template #default="{ row }">
+              <el-switch
+                v-model="row.enabled"
+                @change="toggleEnabled(row)"
+                inline-prompt
+                active-text="启"
+                inactive-text="停"
+                size="small"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="140" fixed="right">
+            <template #default="{ row }">
+              <el-button type="primary" link @click="openEditDialog(row)">
+                <el-icon><Edit /></el-icon>
+              </el-button>
+              <el-button
+                v-if="canResetHealth(row)"
+                type="warning"
+                link
+                @click="resetHealth(row)"
+                :loading="resettingHealth === row.id"
+              >
+                <el-icon><RefreshRight /></el-icon>
+              </el-button>
+              <el-button type="danger" link @click="confirmDelete(row)">
+                <el-icon><Delete /></el-icon>
+              </el-button>
+            </template>
+          </el-table-column>
+          <template #empty>
+            <el-empty description="暂无上游服务器" />
           </template>
-        </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
-          <template #default="{ row }">
-            <el-button type="primary" link @click="openEditDialog(row)">
-              <el-icon><Edit /></el-icon> 编辑
-            </el-button>
-            <el-button
-              v-if="canResetHealth(row)"
-              type="warning"
-              link
-              @click="resetHealth(row)"
-              :loading="resettingHealth === row.id"
-            >
-              <el-icon><RefreshRight /></el-icon> 恢复
-            </el-button>
-            <el-button type="danger" link @click="confirmDelete(row)">
-              <el-icon><Delete /></el-icon> 删除
-            </el-button>
-          </template>
-        </el-table-column>
-        <template #empty>
-          <el-empty description="暂无上游服务器" />
-        </template>
-      </el-table>
+        </el-table>
+      </div>
 
       <div class="pagination-container">
         <el-pagination
@@ -165,7 +168,7 @@
     <el-dialog
       v-model="dialogVisible"
       :title="isEditing ? '编辑服务器' : '添加服务器'"
-      width="520px"
+      :width="isMobile ? '90%' : '520px'"
       class="custom-dialog"
     >
       <el-form
@@ -178,7 +181,7 @@
           <el-input v-model="formData.name" placeholder="Cloudflare DNS" size="large" />
         </el-form-item>
         <el-row :gutter="16">
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="协议" prop="protocol">
               <el-select v-model="formData.protocol" placeholder="选择协议" size="large" style="width: 100%">
                 <el-option label="UDP" value="udp" />
@@ -189,7 +192,7 @@
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="超时 (毫秒)" prop="timeout">
               <el-input-number
                 v-model="formData.timeout"
@@ -229,6 +232,9 @@ import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Plus, Edit, Delete, Connection, CircleCheck, Warning, DataAnalysis, RefreshRight } from '@element-plus/icons-vue'
 import api from '../api'
+import { useResponsive } from '../composables/useResponsive'
+
+const { isMobile } = useResponsive()
 
 interface UpstreamServer {
   id: number
@@ -721,19 +727,59 @@ onUnmounted(() => {
   margin-top: 4px;
 }
 
+/* 表格包装器 */
+.table-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* 响应式 */
 @media (max-width: 768px) {
   .page-header {
     flex-direction: column;
+    align-items: stretch;
     gap: 16px;
   }
   
+  .header-left h1 {
+    font-size: 20px;
+  }
+  
   .stat-card {
-    padding: 16px;
+    padding: 12px;
+    gap: 10px;
+  }
+  
+  .stat-icon {
+    width: 36px;
+    height: 36px;
+    font-size: 18px;
+    border-radius: 8px;
   }
   
   .stat-value {
-    font-size: 20px;
+    font-size: 18px;
+  }
+
+  .stat-label {
+    font-size: 12px;
+  }
+
+  .pagination-container {
+    justify-content: center;
+    padding: 12px;
+  }
+
+  .pagination-container :deep(.el-pagination) {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .pagination-container :deep(.el-pagination__total),
+  .pagination-container :deep(.el-pagination__sizes) {
+    display: none;
   }
 }
 </style>

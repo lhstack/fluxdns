@@ -243,6 +243,48 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // LLM configuration table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS llm_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider VARCHAR(50) NOT NULL,
+                display_name VARCHAR(100) NOT NULL,
+                api_base_url TEXT NOT NULL,
+                api_key TEXT NOT NULL,
+                model VARCHAR(100) NOT NULL,
+                enabled BOOLEAN DEFAULT FALSE,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // LLM conversation history table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS llm_conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role VARCHAR(20) NOT NULL,
+                content TEXT,
+                function_call TEXT,
+                function_result TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_llm_conversations_session ON llm_conversations(session_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         // Seed default upstream servers if none exist
         self.seed_default_upstreams().await?;
 

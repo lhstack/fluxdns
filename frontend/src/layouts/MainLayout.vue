@@ -1,6 +1,11 @@
 <template>
   <el-container class="layout-container">
-    <el-aside width="240px" class="sidebar">
+    <!-- PC 端侧边栏 -->
+    <el-aside 
+      v-if="!isMobile"
+      :width="isCollapse ? '64px' : '240px'" 
+      class="sidebar"
+    >
       <!-- Logo -->
       <div class="logo">
         <div class="logo-icon">
@@ -13,59 +18,57 @@
             <circle cx="48" cy="32" r="3" fill="#fff"/>
           </svg>
         </div>
-        <span class="logo-text">FluxDNS</span>
+        <span v-if="!isCollapse" class="logo-text">FluxDNS</span>
       </div>
 
       <!-- 导航菜单 -->
       <el-menu
         :default-active="activeMenu"
+        :collapse="isCollapse"
         router
         class="sidebar-menu"
       >
-        <el-menu-item index="/">
-          <el-icon><Odometer /></el-icon>
-          <span>仪表盘</span>
-        </el-menu-item>
-        <el-menu-item index="/records">
-          <el-icon><Document /></el-icon>
-          <span>DNS 记录</span>
-        </el-menu-item>
-        <el-menu-item index="/rewrite">
-          <el-icon><Edit /></el-icon>
-          <span>重写规则</span>
-        </el-menu-item>
-        <el-menu-item index="/upstreams">
-          <el-icon><Connection /></el-icon>
-          <span>上游服务器</span>
-        </el-menu-item>
-        <el-menu-item index="/cache">
-          <el-icon><Coin /></el-icon>
-          <span>缓存管理</span>
-        </el-menu-item>
-        <el-menu-item index="/query">
-          <el-icon><Search /></el-icon>
-          <span>DNS 查询</span>
-        </el-menu-item>
-        <el-menu-item index="/logs">
-          <el-icon><List /></el-icon>
-          <span>查询日志</span>
-        </el-menu-item>
-        <el-menu-item index="/listeners">
-          <el-icon><Monitor /></el-icon>
-          <span>服务监听</span>
-        </el-menu-item>
-        <el-menu-item index="/settings">
-          <el-icon><Setting /></el-icon>
-          <span>设置</span>
+        <el-menu-item v-for="item in menuItems" :key="item.path" :index="item.path">
+          <el-icon><component :is="item.icon" /></el-icon>
+          <template #title><span>{{ item.label }}</span></template>
         </el-menu-item>
       </el-menu>
     </el-aside>
+
+    <!-- 移动端抽屉导航 -->
+    <el-drawer
+      v-model="mobileMenuVisible"
+      direction="ltr"
+      size="240px"
+      :with-header="false"
+      class="mobile-drawer"
+    >
+      <div class="sidebar mobile-sidebar">
+        <div class="logo">
+          <span class="logo-text">FluxDNS</span>
+        </div>
+        <el-menu
+          :default-active="activeMenu"
+          router
+          @select="mobileMenuVisible = false"
+          class="sidebar-menu"
+        >
+          <el-menu-item v-for="item in menuItems" :key="item.path" :index="item.path">
+            <el-icon><component :is="item.icon" /></el-icon>
+            <span>{{ item.label }}</span>
+          </el-menu-item>
+        </el-menu>
+      </div>
+    </el-drawer>
 
     <el-container class="main-container">
       <!-- 顶部栏 -->
       <el-header class="header">
         <div class="header-left">
-          <el-breadcrumb separator="/">
+          <div class="menu-toggle" @click="toggleMenu">
+             <el-icon :size="20"><Expand v-if="isCollapse || isMobile" /><Fold v-else /></el-icon>
+          </div>
+          <el-breadcrumb separator="/" class="hidden-xs-only">
             <el-breadcrumb-item :to="{ path: '/' }">首页</el-breadcrumb-item>
             <el-breadcrumb-item v-if="currentPageTitle">{{ currentPageTitle }}</el-breadcrumb-item>
           </el-breadcrumb>
@@ -76,7 +79,7 @@
               <el-avatar :size="32" class="user-avatar">
                 {{ authStore.username?.charAt(0).toUpperCase() }}
               </el-avatar>
-              <span class="username">{{ authStore.username }}</span>
+              <span class="username hidden-xs-only">{{ authStore.username }}</span>
               <el-icon><ArrowDown /></el-icon>
             </div>
             <template #dropdown>
@@ -93,40 +96,72 @@
 
       <!-- 主内容区 -->
       <el-main class="main-content">
-        <router-view />
+        <div class="content-wrapper">
+          <router-view v-slot="{ Component }">
+            <transition name="fade-transform" mode="out-in">
+              <component :is="Component" />
+            </transition>
+          </router-view>
+        </div>
       </el-main>
     </el-container>
+    
+    <!-- AI 助手浮动组件 -->
+    <AiAssistant />
   </el-container>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import { ArrowDown, SwitchButton } from '@element-plus/icons-vue'
+import { 
+  ArrowDown, SwitchButton, Odometer, Document, Edit, 
+  Connection, Coin, Search, List, Monitor, Setting,
+  Expand, Fold, ChatDotRound
+} from '@element-plus/icons-vue'
+import AiAssistant from '../components/AiAssistant.vue'
+import { useResponsive } from '../composables/useResponsive'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const { isMobile, isCollapse } = useResponsive()
+
+const mobileMenuVisible = ref(false)
 
 const activeMenu = computed(() => route.path)
 
-const pageMap: Record<string, string> = {
-  '/': '仪表盘',
-  '/records': 'DNS 记录',
-  '/rewrite': '重写规则',
-  '/upstreams': '上游服务器',
-  '/cache': '缓存管理',
-  '/query': 'DNS 查询',
-  '/logs': '查询日志',
-  '/listeners': '服务监听',
-  '/settings': '设置'
-}
+const menuItems = [
+  { path: '/', label: '仪表盘', icon: Odometer },
+  { path: '/records', label: 'DNS 记录', icon: Document },
+  { path: '/rewrite', label: '重写规则', icon: Edit },
+  { path: '/upstreams', label: '上游服务器', icon: Connection },
+  { path: '/cache', label: '缓存管理', icon: Coin },
+  { path: '/query', label: 'DNS 查询', icon: Search },
+  { path: '/logs', label: '查询日志', icon: List },
+  { path: '/listeners', label: '服务监听', icon: Monitor },
+  { path: '/settings', label: '设置', icon: Setting },
+  { path: '/llm', label: 'AI 助手', icon: ChatDotRound },
+]
+
+const pageMap = menuItems.reduce((acc, item) => {
+  acc[item.path] = item.label
+  return acc
+}, {} as Record<string, string>)
 
 const currentPageTitle = computed(() => {
   if (route.path === '/') return ''
   return pageMap[route.path] || ''
 })
+
+const toggleMenu = () => {
+  if (isMobile.value) {
+    mobileMenuVisible.value = !mobileMenuVisible.value
+  } else {
+    isCollapse.value = !isCollapse.value
+  }
+}
 
 function handleLogout() {
   authStore.logout()
@@ -144,6 +179,9 @@ function handleLogout() {
   background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
   box-shadow: 2px 0 8px rgba(0, 0, 0, 0.15);
   overflow: hidden;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
 }
 
 .logo {
@@ -153,11 +191,12 @@ function handleLogout() {
   justify-content: center;
   gap: 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
 }
 
 .logo-icon {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
 }
 
 .logo-icon svg {
@@ -177,6 +216,7 @@ function handleLogout() {
   border-right: none;
   background: transparent;
   padding: 12px 0;
+  flex: 1;
 }
 
 .sidebar-menu :deep(.el-menu-item) {
@@ -204,9 +244,24 @@ function handleLogout() {
   margin-right: 8px;
 }
 
+/* 折叠状态下的图标居中 */
+.sidebar-menu.el-menu--collapse :deep(.el-menu-item) {
+  margin: 4px 8px;
+  padding: 0 !important;
+  display: flex;
+  justify-content: center;
+}
+
+.sidebar-menu.el-menu--collapse :deep(.el-menu-item .el-icon) {
+  margin-right: 0;
+}
+
 /* 主容器 */
 .main-container {
   background: #f0f2f5;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* 顶部栏 */
@@ -218,11 +273,29 @@ function handleLogout() {
   align-items: center;
   justify-content: space-between;
   padding: 0 24px;
+  z-index: 10;
 }
 
 .header-left {
   display: flex;
   align-items: center;
+  gap: 16px;
+}
+
+.menu-toggle {
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 4px;
+  color: #667eea;
+  background: #f0f2f5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s;
+}
+
+.menu-toggle:hover {
+  background: #e4e7ed;
 }
 
 .header-right {
@@ -259,20 +332,52 @@ function handleLogout() {
 .main-content {
   padding: 24px;
   overflow-y: auto;
+  flex: 1;
 }
 
-/* 响应式 */
+.content-wrapper {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* 移动端侧边栏覆盖 */
+:deep(.mobile-drawer) .el-drawer__body {
+  padding: 0;
+}
+
+.mobile-sidebar {
+  height: 100%;
+  width: 100% !important;
+  background: linear-gradient(180deg, #667eea 0%, #764ba2 100%) !important;
+}
+
+.mobile-sidebar .logo-text {
+  display: block !important;
+}
+
+/* 响应式辅助 */
 @media (max-width: 768px) {
-  .sidebar {
-    width: 64px !important;
+  .hidden-xs-only {
+    display: none !important;
   }
-  
-  .logo-text {
-    display: none;
+  .main-content {
+    padding: 16px;
   }
-  
-  .sidebar-menu :deep(.el-menu-item span) {
-    display: none;
-  }
+}
+
+/* 过渡动画 */
+.fade-transform-enter-active,
+.fade-transform-leave-active {
+  transition: all 0.3s;
+}
+
+.fade-transform-enter-from {
+  opacity: 0;
+  transform: translateX(-15px);
+}
+
+.fade-transform-leave-to {
+  opacity: 0;
+  transform: translateX(15px);
 }
 </style>

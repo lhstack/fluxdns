@@ -238,6 +238,21 @@ pub async fn run() -> Result<()> {
         db: db.clone(),
     });
     let doh_routes = doh_server.router();
+    
+    // LLM API routes
+    let app_state = Arc::new(AppState {
+        config: config.clone(),
+        db: db.clone(),
+        log_manager: log_manager.clone(),
+        resolver: resolver.clone(),
+        cache: cache.clone(),
+        proxy: proxy.clone(),
+        rewrite_engine: rewrite_engine.clone(),
+        upstream_manager: upstream_manager.clone(),
+    });
+    let llm_routes = crate::web::llm_router().with_state(crate::web::LlmState {
+        app_state: app_state.clone(),
+    });
 
     // Create protected API router (requires authentication)
     let protected_api = Router::new()
@@ -251,7 +266,9 @@ pub async fn run() -> Result<()> {
         .nest("/api/status", status_routes)
         .nest("/api/listeners", listeners_routes)
         .nest("/api/settings", settings_routes)
+        .nest("/api/llm", llm_routes)
         .layer(middleware::from_fn_with_state(auth_state.clone(), auth_middleware));
+
 
     // Create login router with AuthState
     let login_router = Router::new()

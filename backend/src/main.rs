@@ -8,6 +8,7 @@ mod config;
 mod db;
 mod dns;
 mod error;
+mod llm;
 mod log;
 mod state;
 mod web;

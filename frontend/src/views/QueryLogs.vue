@@ -21,7 +21,7 @@
           </div>
           <div class="stat-info">
             <span class="stat-value">{{ stats.total_queries }}</span>
-            <span class="stat-label">总查询数</span>
+            <span class="stat-label">总查询</span>
           </div>
         </div>
       </el-col>
@@ -32,7 +32,7 @@
           </div>
           <div class="stat-info">
             <span class="stat-value">{{ stats.queries_today }}</span>
-            <span class="stat-label">今日查询</span>
+            <span class="stat-label">今日</span>
           </div>
         </div>
       </el-col>
@@ -43,7 +43,7 @@
           </div>
           <div class="stat-info">
             <span class="stat-value">{{ stats.cache_hits }}</span>
-            <span class="stat-label">缓存命中</span>
+            <span class="stat-label">命中</span>
           </div>
         </div>
       </el-col>
@@ -54,7 +54,7 @@
           </div>
           <div class="stat-info">
             <span class="stat-value">{{ (stats.cache_hit_rate * 100).toFixed(1) }}%</span>
-            <span class="stat-label">命中率</span>
+            <span class="stat-label">率</span>
           </div>
         </div>
       </el-col>
@@ -138,8 +138,9 @@
 
     <!-- 日志表格 -->
     <el-card class="table-card" shadow="never">
-      <el-table :data="logs" v-loading="loading" stripe class="custom-table">
-        <el-table-column prop="id" label="ID" width="80" />
+      <div class="table-wrapper">
+        <el-table :data="logs" v-loading="loading" stripe class="custom-table">
+          <el-table-column prop="id" label="ID" width="70" class-name="hidden-xs-only" />
         <el-table-column prop="query_name" label="查询域名" min-width="200">
           <template #default="{ row }">
             <span class="domain-name">{{ row.query_name }}</span>
@@ -150,11 +151,11 @@
             <el-tag effect="dark" size="small">{{ row.query_type }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="client_ip" label="客户端 IP" width="140">
-          <template #default="{ row }">
-            <span class="client-ip">{{ row.client_ip }}</span>
-          </template>
-        </el-table-column>
+          <el-table-column prop="client_ip" label="客户端" width="130" class-name="hidden-xs-only">
+            <template #default="{ row }">
+              <span class="client-ip">{{ row.client_ip }}</span>
+            </template>
+          </el-table-column>
         <el-table-column prop="response_code" label="响应码" width="110">
           <template #default="{ row }">
             <el-tag :type="getResponseCodeType(row.response_code)" size="small" effect="plain">
@@ -167,18 +168,18 @@
             <span class="response-time">{{ row.response_time ? `${row.response_time}ms` : '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="cache_hit" label="缓存" width="90">
-          <template #default="{ row }">
-            <el-tag :type="row.cache_hit ? 'success' : 'info'" size="small" effect="plain">
-              {{ row.cache_hit ? '命中' : '未命中' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="upstream_used" label="上游服务器" min-width="120">
-          <template #default="{ row }">
-            <span class="upstream-name">{{ row.upstream_used || '-' }}</span>
-          </template>
-        </el-table-column>
+          <el-table-column prop="cache_hit" label="缓存" width="70">
+            <template #default="{ row }">
+              <el-tag :type="row.cache_hit ? 'success' : 'info'" size="small" effect="plain">
+                {{ row.cache_hit ? '是' : '否' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="upstream_used" label="上游" min-width="120" class-name="hidden-xs-only">
+            <template #default="{ row }">
+              <span class="upstream-name">{{ row.upstream_used || '-' }}</span>
+            </template>
+          </el-table-column>
         <el-table-column prop="created_at" label="时间" width="180">
           <template #default="{ row }">
             <span class="time-value">{{ formatTime(row.created_at) }}</span>
@@ -188,6 +189,7 @@
           <el-empty description="暂无查询日志" />
         </template>
       </el-table>
+      </div>
 
       <div class="pagination-container">
         <el-pagination
@@ -489,36 +491,80 @@ onMounted(() => {
   border-top: 1px solid #f0f0f0;
 }
 
+/* 表格包装器 */
+.table-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* 响应式 */
 @media (max-width: 768px) {
   .page-header {
     flex-direction: column;
+    align-items: stretch;
     gap: 16px;
   }
   
+  .header-left h1 {
+    font-size: 20px;
+  }
+  
   .stat-card {
-    padding: 16px;
+    padding: 12px;
+    gap: 10px;
+  }
+  
+  .stat-icon {
+    width: 36px;
+    height: 36px;
+    font-size: 18px;
+    border-radius: 8px;
   }
   
   .stat-value {
-    font-size: 20px;
+    font-size: 18px;
+  }
+
+  .stat-label {
+    font-size: 12px;
   }
   
   .filter-form {
     flex-direction: column;
+    gap: 12px;
   }
   
   .filter-item {
     width: 100%;
+    min-width: unset;
   }
   
   .filter-actions {
     width: 100%;
     margin-left: 0;
+    gap: 12px;
   }
   
   .filter-actions .el-button {
     flex: 1;
+    margin-left: 0;
+  }
+
+  .pagination-container {
+    justify-content: center;
+    padding: 12px;
+  }
+
+  .pagination-container :deep(.el-pagination) {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .pagination-container :deep(.el-pagination__total),
+  .pagination-container :deep(.el-pagination__sizes) {
+    display: none;
   }
 }
 </style>

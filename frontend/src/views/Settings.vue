@@ -4,11 +4,11 @@
     <div class="page-header">
       <div class="header-left">
         <h1>系统设置</h1>
-        <p class="subtitle">配置查询策略、记录类型开关，查看系统状态和健康检查</p>
+        <p class="subtitle">配置查询策略与系统参数</p>
       </div>
-      <el-button type="primary" size="large" @click="refreshAll">
+      <el-button type="primary" @click="refreshAll" class="action-btn">
         <el-icon><Refresh /></el-icon>
-        刷新全部
+        <span class="hidden-xs-only">刷新全部</span>
       </el-button>
     </div>
 
@@ -32,7 +32,7 @@
           </div>
           <div class="stat-info">
             <span class="stat-value">{{ status.query?.total_queries || 0 }}</span>
-            <span class="stat-label">总查询数</span>
+            <span class="stat-label">总查询</span>
           </div>
         </div>
       </el-col>
@@ -187,25 +187,27 @@
                       format="YYYY-MM-DD"
                       value-format="YYYY-MM-DD"
                       :disabled-date="disabledDate"
-                      style="width: 200px;"
+                      class="date-picker-responsive"
                     />
-                    <el-button 
-                      type="warning" 
-                      @click="cleanupBeforeDateAction"
-                      :loading="cleaningLogs"
-                      :disabled="!cleanupBeforeDate"
-                    >
-                      <el-icon><Delete /></el-icon>
-                      清理日志
-                    </el-button>
-                    <el-button 
-                      type="danger" 
-                      @click="cleanupAllLogsAction"
-                      :loading="cleaningLogs"
-                    >
-                      <el-icon><DeleteFilled /></el-icon>
-                      清空全部
-                    </el-button>
+                    <div class="cleanup-btns">
+                      <el-button 
+                        type="warning" 
+                        @click="cleanupBeforeDateAction"
+                        :loading="cleaningLogs"
+                        :disabled="!cleanupBeforeDate"
+                      >
+                        <el-icon><Delete /></el-icon>
+                        清理日志
+                      </el-button>
+                      <el-button 
+                        type="danger" 
+                        @click="cleanupAllLogsAction"
+                        :loading="cleaningLogs"
+                      >
+                        <el-icon><DeleteFilled /></el-icon>
+                        清空全部
+                      </el-button>
+                    </div>
                   </div>
                   <div class="oldest-log-info" v-if="retentionSettings.oldest_log_date">
                     <el-icon><InfoFilled /></el-icon>
@@ -238,7 +240,7 @@
                         :max="365"
                         :disabled="!retentionSettings.auto_cleanup_enabled"
                         @change="saveRetentionSettings"
-                        style="width: 140px;"
+                        class="number-input-responsive"
                       />
                       <span class="input-suffix">天</span>
                     </div>
@@ -1248,5 +1250,95 @@ onMounted(() => {
 .input-suffix {
   font-size: 14px;
   color: #909399;
+}
+/* 响应式样式已针对大屏幕优化，以下为移动端适配 */
+@media (max-width: 768px) {
+  .page-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
+  }
+
+  .header-left h1 {
+    font-size: 20px;
+  }
+
+  .stat-card {
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .stat-icon {
+    width: 36px;
+    height: 36px;
+    font-size: 18px;
+    border-radius: 8px;
+  }
+
+  .stat-value {
+    font-size: 18px;
+  }
+
+  .stat-label {
+    font-size: 12px;
+  }
+
+  /* 清理表单适配 */
+  .cleanup-form {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .date-picker-responsive {
+    width: 100% !important;
+  }
+
+  .cleanup-btns {
+    display: flex;
+    gap: 8px;
+  }
+
+  .cleanup-btns .el-button {
+    flex: 1;
+    margin-left: 0;
+  }
+
+  /* 自动清理适配 */
+  .auto-cleanup-form {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .number-input-responsive {
+    width: 100% !important;
+  }
+
+  /* 记录类型适配 */
+  .record-type-item {
+    padding: 10px 0;
+  }
+
+  .record-type-desc {
+    display: none;
+  }
+
+  /* 系统状态适配 */
+  .status-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 10px 0;
+  }
+
+  .status-value {
+    font-size: 14px;
+  }
+
+  /* 健康检查适配 */
+  .health-item {
+    padding: 10px;
+  }
 }
 </style>

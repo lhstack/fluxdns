@@ -16,7 +16,7 @@
 
     <!-- 核心指标 -->
     <el-row :gutter="20" class="stats-row">
-      <el-col :xs="12" :sm="6">
+      <el-col :xs="24" :sm="12" :lg="6">
         <div class="stat-card">
           <div class="stat-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
             <el-icon><DataAnalysis /></el-icon>
@@ -27,7 +27,7 @@
           </div>
         </div>
       </el-col>
-      <el-col :xs="12" :sm="6">
+      <el-col :xs="24" :sm="12" :lg="6">
         <div class="stat-card">
           <div class="stat-icon" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
             <el-icon><TrendCharts /></el-icon>
@@ -38,7 +38,7 @@
           </div>
         </div>
       </el-col>
-      <el-col :xs="12" :sm="6">
+      <el-col :xs="24" :sm="12" :lg="6">
         <div class="stat-card">
           <div class="stat-icon" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
             <el-icon><Coin /></el-icon>
@@ -49,7 +49,7 @@
           </div>
         </div>
       </el-col>
-      <el-col :xs="12" :sm="6">
+      <el-col :xs="24" :sm="12" :lg="6">
         <div class="stat-card">
           <div class="stat-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
             <el-icon><Timer /></el-icon>
@@ -64,7 +64,7 @@
 
     <!-- 详细信息卡片 -->
     <el-row :gutter="20" class="detail-row">
-      <el-col :xs="24" :sm="12">
+      <el-col :xs="24" :md="12">
         <el-card class="detail-card" shadow="never">
           <template #header>
             <div class="card-header">
@@ -83,12 +83,12 @@
             </div>
             <div class="detail-item">
               <span class="label">查询策略</span>
-              <el-tag type="primary" effect="plain">{{ strategyName }}</el-tag>
+              <el-tag type="primary" effect="plain" size="small">{{ strategyName }}</el-tag>
             </div>
           </div>
         </el-card>
       </el-col>
-      <el-col :xs="24" :sm="12">
+      <el-col :xs="24" :md="12">
         <el-card class="detail-card" shadow="never">
           <template #header>
             <div class="card-header">

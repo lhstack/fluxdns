@@ -62,63 +62,65 @@
 
     <!-- 记录表格 -->
     <el-card class="table-card" shadow="never">
-      <el-table :data="records" v-loading="loading" stripe class="custom-table">
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column prop="name" label="域名" min-width="200">
-          <template #default="{ row }">
-            <span class="domain-name">{{ row.name }}</span>
+      <div class="table-wrapper">
+        <el-table :data="records" v-loading="loading" stripe class="custom-table">
+          <el-table-column prop="id" label="ID" width="70" />
+          <el-table-column prop="name" label="域名" min-width="180">
+            <template #default="{ row }">
+              <span class="domain-name">{{ row.name }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="record_type" label="类型" width="90">
+            <template #default="{ row }">
+              <el-tag :type="getTypeTagType(row.record_type)" effect="plain" size="small">
+                {{ row.record_type }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="value" label="值" min-width="180">
+            <template #default="{ row }">
+              <span class="record-value">{{ row.value }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="ttl" label="TTL" width="90">
+            <template #default="{ row }">
+              <span class="ttl-value">{{ row.ttl }}s</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="priority" label="优先级" width="80" class-name="hidden-xs-only" />
+          <el-table-column prop="enabled" label="状态" width="80">
+            <template #default="{ row }">
+              <el-switch
+                v-model="row.enabled"
+                @change="toggleEnabled(row)"
+                inline-prompt
+                active-text="启"
+                inactive-text="停"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="120" fixed="right">
+            <template #default="{ row }">
+              <el-button type="primary" link @click="openEditDialog(row)">
+                <el-icon><Edit /></el-icon>
+              </el-button>
+              <el-button type="danger" link @click="confirmDelete(row)">
+                <el-icon><Delete /></el-icon>
+              </el-button>
+            </template>
+          </el-table-column>
+          <template #empty>
+            <el-empty description="暂无 DNS 记录" />
           </template>
-        </el-table-column>
-        <el-table-column prop="record_type" label="类型" width="100">
-          <template #default="{ row }">
-            <el-tag :type="getTypeTagType(row.record_type)" effect="plain">
-              {{ row.record_type }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="value" label="值" min-width="200">
-          <template #default="{ row }">
-            <span class="record-value">{{ row.value }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="ttl" label="TTL" width="100">
-          <template #default="{ row }">
-            <span class="ttl-value">{{ row.ttl }}s</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="priority" label="优先级" width="90" />
-        <el-table-column prop="enabled" label="状态" width="90">
-          <template #default="{ row }">
-            <el-switch
-              v-model="row.enabled"
-              @change="toggleEnabled(row)"
-              inline-prompt
-              active-text="启"
-              inactive-text="停"
-            />
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="140" fixed="right">
-          <template #default="{ row }">
-            <el-button type="primary" link @click="openEditDialog(row)">
-              <el-icon><Edit /></el-icon> 编辑
-            </el-button>
-            <el-button type="danger" link @click="confirmDelete(row)">
-              <el-icon><Delete /></el-icon> 删除
-            </el-button>
-          </template>
-        </el-table-column>
-        <template #empty>
-          <el-empty description="暂无 DNS 记录" />
-        </template>
-      </el-table>
+        </el-table>
+      </div>
     </el-card>
 
     <!-- 创建/编辑对话框 -->
     <el-dialog
       v-model="dialogVisible"
       :title="isEditing ? '编辑记录' : '添加记录'"
-      width="520px"
+      :width="isMobile ? '90%' : '520px'"
       class="custom-dialog"
     >
       <el-form
@@ -133,7 +135,7 @@
           <div class="form-tip">支持泛域名，如 *.example.com 可匹配所有子域名</div>
         </el-form-item>
         <el-row :gutter="16">
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="类型" prop="record_type">
               <el-select v-model="formData.record_type" placeholder="选择记录类型" size="large" style="width: 100%">
                 <el-option
@@ -145,7 +147,7 @@
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="TTL (秒)" prop="ttl">
               <el-input-number v-model="formData.ttl" :min="0" :max="86400" size="large" style="width: 100%" />
             </el-form-item>
@@ -159,14 +161,16 @@
           />
         </el-form-item>
         <el-row :gutter="16">
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="优先级" prop="priority">
               <el-input-number v-model="formData.priority" :min="0" size="large" style="width: 100%" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :xs="24" :sm="12">
             <el-form-item label="状态" prop="enabled">
-              <el-switch v-model="formData.enabled" active-text="启用" inactive-text="禁用" size="large" />
+              <div class="flex-center" style="height: 40px">
+                <el-switch v-model="formData.enabled" active-text="启用" inactive-text="禁用" size="large" />
+              </div>
             </el-form-item>
           </el-col>
         </el-row>
@@ -186,6 +190,9 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Plus, Edit, Delete, Document, CircleCheck, CircleClose, Collection } from '@element-plus/icons-vue'
 import api from '../api'
+import { useResponsive } from '../composables/useResponsive'
+
+const { isMobile } = useResponsive()
 
 interface DnsRecord {
   id: number
@@ -495,19 +502,51 @@ onMounted(() => {
   padding: 16px 24px;
 }
 
+/* 表格包装器 */
+.table-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* 响应式 */
 @media (max-width: 768px) {
   .page-header {
     flex-direction: column;
+    align-items: stretch;
     gap: 16px;
   }
   
+  .header-left h1 {
+    font-size: 20px;
+  }
+  
   .stat-card {
-    padding: 16px;
+    padding: 12px;
+    gap: 10px;
+  }
+  
+  .stat-icon {
+    width: 36px;
+    height: 36px;
+    font-size: 18px;
+    border-radius: 8px;
   }
   
   .stat-value {
-    font-size: 20px;
+    font-size: 18px;
+  }
+
+  .stat-label {
+    font-size: 12px;
+  }
+  
+  .custom-dialog :deep(.el-dialog__body) {
+    padding: 16px;
+  }
+
+  .flex-center {
+    display: flex;
+    align-items: center;
   }
 }
 
