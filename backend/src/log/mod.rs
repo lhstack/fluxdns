@@ -49,6 +49,7 @@ pub struct LogConfig {
     /// Log level filter (trace, debug, info, warn, error)
     pub level: String,
     /// Maximum size per log file in bytes (for size-based rotation reference)
+    #[allow(dead_code)]
     pub max_size: u64,
     /// Rotation policy
     pub rotation: RotationPolicy,
@@ -115,6 +116,7 @@ pub struct LogManager {
     config: LogConfig,
 }
 
+#[allow(dead_code)]
 impl LogManager {
     /// Create a new LogManager with the given configuration
     pub fn new(config: LogConfig) -> Self {
@@ -388,8 +390,10 @@ pub struct CleanupResult {
 #[derive(Debug, Clone)]
 pub struct LogFileInfo {
     /// Path to the log file
+    #[allow(dead_code)]
     pub path: PathBuf,
     /// Size in bytes
+    #[allow(dead_code)]
     pub size: u64,
     /// Last modification time
     pub modified: Option<SystemTime>,

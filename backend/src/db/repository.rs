@@ -56,6 +56,7 @@ impl DnsRecordRepository {
     }
 
     /// Get DNS records by name
+    #[allow(dead_code)]
     pub async fn get_by_name(&self, name: &str) -> Result<Vec<DnsRecord>> {
         let result = sqlx::query_as::<_, DnsRecord>(
             "SELECT * FROM dns_records WHERE name = ? AND enabled = TRUE",
@@ -270,6 +271,7 @@ impl RewriteRuleRepository {
     }
 
     /// List enabled rewrite rules ordered by priority
+    #[allow(dead_code)]
     pub async fn list_enabled(&self) -> Result<Vec<RewriteRule>> {
         let result = sqlx::query_as::<_, RewriteRule>(
             "SELECT * FROM rewrite_rules WHERE enabled = TRUE ORDER BY priority DESC, id ASC",
@@ -536,6 +538,7 @@ impl QueryLogRepository {
     }
 
     /// Get a query log by ID
+    #[allow(dead_code)]
     pub async fn get_by_id(&self, id: i64) -> Result<Option<QueryLog>> {
         let result = sqlx::query_as::<_, QueryLog>(
             "SELECT * FROM query_logs WHERE id = ?",
@@ -770,6 +773,7 @@ impl SystemConfigRepository {
     }
 
     /// Delete a config value
+    #[allow(dead_code)]
     pub async fn delete(&self, key: &str) -> Result<bool> {
         let result = sqlx::query("DELETE FROM system_config WHERE key = ?")
             .bind(key)
@@ -780,6 +784,7 @@ impl SystemConfigRepository {
     }
 
     /// List all config values
+    #[allow(dead_code)]
     pub async fn list(&self) -> Result<Vec<SystemConfig>> {
         let result = sqlx::query_as::<_, SystemConfig>(
             "SELECT * FROM system_config ORDER BY key",

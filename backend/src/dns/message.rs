@@ -29,6 +29,7 @@ pub enum DnsError {
     InvalidDomainName(String),
 
     #[error("Query failed: {0}")]
+    #[allow(dead_code)]
     QueryFailed(String),
 }
 
@@ -80,6 +81,7 @@ impl RecordType {
     }
 
     /// Get all supported record types
+    #[allow(dead_code)]
     pub fn all() -> &'static [RecordType] {
         &[
             RecordType::A,

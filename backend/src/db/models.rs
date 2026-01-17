@@ -152,6 +152,7 @@ pub struct CreateQueryLog {
 
 /// System config entity
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[allow(dead_code)]
 pub struct SystemConfig {
     pub key: String,
     pub value: String,

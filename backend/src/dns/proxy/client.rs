@@ -485,12 +485,18 @@ impl DnsClient for DohDnsClient {
 /// Queries upstream DNS servers using DNS over QUIC protocol.
 pub struct DoqDnsClient {
     server: UpstreamServer,
+    connection: Arc<tokio::sync::RwLock<Option<quinn::Connection>>>,
+    connect_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl DoqDnsClient {
     /// Create a new DoQ DNS client
     pub fn new(server: UpstreamServer) -> Self {
-        Self { server }
+        Self { 
+            server,
+            connection: Arc::new(tokio::sync::RwLock::new(None)),
+            connect_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
     }
 
     /// Parse the server address and resolve hostname if needed
@@ -567,120 +573,124 @@ impl DnsClient for DoqDnsClient {
         use tracing::debug;
 
         let (addr, sni_host) = self.resolve_address().await?;
-        debug!("DoQ connecting to {} (SNI: {})", addr, sni_host);
         
-        // Get or create cached endpoint (reuse for better performance)
-        let endpoint = get_quic_endpoint(QuicProtocol::Doq, addr.is_ipv6())?;
+        // Loop to allow one retry if cached connection fails
+        let mut attempts = 0;
         
-        let start = Instant::now();
-        
-        // For IP addresses, quinn's connect() requires a valid DNS name for SNI.
-        // We use a placeholder domain "dns" since we're skipping certificate verification anyway.
-        // This is how AdGuard dnsproxy handles IP-based DoQ connections - it uses InsecureSkipVerify
-        // and doesn't rely on SNI for certificate validation.
-        let connect_sni = sni_host.as_str();
-        debug!("DoQ using SNI: {}", connect_sni);
-        
-        // Connect with timeout
-        let connection = timeout(
-            self.server.timeout,
-            endpoint.connect(addr, connect_sni)?
-        ).await
-            .map_err(|_| anyhow!("Connection timeout"))??;
-        
-        debug!("DoQ connection established to {}", addr);
-        
-        // Open a bidirectional stream
-        let (mut send, mut recv) = timeout(
-            self.server.timeout,
-            connection.open_bi()
-        ).await
-            .map_err(|_| anyhow!("Stream open timeout"))??;
-        
-        // Encode query with 2-byte length prefix (RFC 9250 Section 4.2)
-        // "a 2-octet length field is used in exactly the same way as the 2-octet length field defined for DNS over TCP"
-        // RFC 9250 Section 4.2.1: "When sending queries over a QUIC connection, the DNS Message ID MUST be set to 0"
-        let doq_query = DnsQuery::with_id(0, &query.name, query.record_type.clone());
-        let query_bytes = doq_query.to_bytes()
-            .map_err(|e| anyhow!("Failed to encode query: {}", e))?;
-        let len = (query_bytes.len() as u16).to_be_bytes();
-        
-        debug!("DoQ sending {} bytes query (with 2-byte length prefix)", query_bytes.len());
-        send.write_all(&len).await?;
-        send.write_all(&query_bytes).await?;
-        // finish() is no longer async in quinn 0.11
-        send.finish().map_err(|e| anyhow!("Failed to finish stream: {}", e))?;
-        
-        // Read response with 2-byte length prefix (RFC 9250)
-        let mut len_buf = [0u8; 2];
-        debug!("DoQ waiting for response length prefix...");
-        match recv.read_exact(&mut len_buf).await {
-            Ok(_) => {
+        loop {
+            attempts += 1;
+            let is_retry = attempts > 1;
+            
+            // 1. Get connection (cached or new)
+            // On retry, force new connection
+            let is_healthy = |c: &quinn::Connection| c.close_reason().is_none();
+            
+            // 1. Get connection (cached) - Fast path
+            let connection = if is_retry {
+                debug!("DoQ retry: forcing new connection to {}", addr);
+                None
+            } else {
+                let guard = self.connection.read().await;
+                guard.clone().filter(|c| is_healthy(c))
+            };
+            
+            let connection = if let Some(conn) = connection {
+                debug!("DoQ reusing existing connection to {}", addr);
+                conn
+            } else {
+                // 2. Slow path: Acquire lock to serialize connection attempts
+                let _lock = self.connect_lock.lock().await;
+
+                // 3. Double check
+                let guard = self.connection.read().await;
+                if let Some(conn) = guard.clone().filter(|c| is_healthy(c)) {
+                    drop(guard);
+                    debug!("DoQ reused connection created by another thread to {}", addr);
+                    conn
+                } else {
+                    drop(guard);
+                    
+                    debug!("DoQ creating new connection to {} (SNI: {})", addr, sni_host);
+                    
+                    // Get or create cached endpoint
+                    let endpoint = get_quic_endpoint(QuicProtocol::Doq, addr.is_ipv6())?;
+                    let connect_sni = sni_host.as_str();
+                    
+                    match timeout(self.server.timeout, endpoint.connect(addr, connect_sni)?).await {
+                        Ok(Ok(conn)) => {
+                            debug!("DoQ connection established to {}", addr);
+                            // Update cache
+                            let mut guard = self.connection.write().await;
+                            *guard = Some(conn.clone());
+                            conn
+                        },
+                        Ok(Err(e)) => return Err(anyhow!("Connection failed: {}", e)),
+                        Err(_) => return Err(anyhow!("Connection timeout")),
+                    }
+                }
+            };
+
+            // 2. Perform Query
+            let query_result = async {
+                // Open stream
+                let (mut send, mut recv) = timeout(self.server.timeout, connection.open_bi()).await
+                    .map_err(|_| anyhow!("Stream open timeout"))??;
+                
+                // Encode query
+                let doq_query = DnsQuery::with_id(0, &query.name, query.record_type.clone());
+                let query_bytes = doq_query.to_bytes()
+                    .map_err(|e| anyhow!("Failed to encode query: {}", e))?;
+                let len = (query_bytes.len() as u16).to_be_bytes();
+                
+                let start = Instant::now();
+                debug!("DoQ sending {} bytes query", query_bytes.len());
+                
+                send.write_all(&len).await?;
+                send.write_all(&query_bytes).await?;
+                send.finish().map_err(|e| anyhow!("Failed to finish stream: {}", e))?;
+                
+                // Read response
+                let mut len_buf = [0u8; 2];
+                timeout(self.server.timeout, recv.read_exact(&mut len_buf)).await
+                    .map_err(|_| anyhow!("read timeout"))??;
+                    
                 let response_len = u16::from_be_bytes(len_buf) as usize;
-                debug!("DoQ response length: {} bytes", response_len);
                 
                 if response_len == 0 || response_len > 65535 {
-                    return Err(anyhow!("Invalid response length: {}", response_len));
+                     return Err(anyhow!("Invalid response length: {}", response_len));
                 }
                 
                 let mut response_bytes = vec![0u8; response_len];
                 recv.read_exact(&mut response_bytes).await
                     .map_err(|e| anyhow!("Failed to read response body: {}", e))?;
-                
-                debug!("DoQ received {} bytes response", response_bytes.len());
-                
+                    
                 let response_time = start.elapsed();
-                
                 let response = DnsResponse::from_bytes(&response_bytes)
                     .map_err(|e| anyhow!("Failed to parse response: {}", e))?;
-                
-                debug!("DoQ response code: {}", response.response_code);
-                
-                // Close connection
-                connection.close(0u32.into(), b"done");
-                
+                    
                 Ok(QueryResult {
                     response,
                     response_time_ms: response_time.as_millis() as u64,
                     server_id: self.server.id,
                     server_name: self.server.name.clone(),
                 })
-            }
-            Err(e) => {
-                // Try reading without length prefix (some servers may not use it)
-                debug!("DoQ failed to read length prefix: {}, trying without prefix...", e);
-                
-                // The first 2 bytes we tried to read might be part of the DNS message
-                // Try to read the rest of the stream
-                let mut response_bytes = len_buf.to_vec();
-                match recv.read_to_end(65535).await {
-                    Ok(rest) => {
-                        response_bytes.extend(rest);
-                        debug!("DoQ received {} bytes response (no length prefix)", response_bytes.len());
-                        
-                        if response_bytes.len() < 12 {
-                            return Err(anyhow!("Response too short: {} bytes", response_bytes.len()));
-                        }
-                        
-                        let response_time = start.elapsed();
-                        
-                        let response = DnsResponse::from_bytes(&response_bytes)
-                            .map_err(|e| anyhow!("Failed to parse response: {}", e))?;
-                        
-                        debug!("DoQ response code: {}", response.response_code);
-                        
-                        connection.close(0u32.into(), b"done");
-                        
-                        Ok(QueryResult {
-                            response,
-                            response_time_ms: response_time.as_millis() as u64,
-                            server_id: self.server.id,
-                            server_name: self.server.name.clone(),
-                        })
+            }.await;
+
+            match query_result {
+                Ok(res) => return Ok(res),
+                Err(e) => {
+                    // If we failed on a possibly reused connection, retry once with a fresh one
+                    if !is_retry {
+                        // Check if it was a connection error that warrants retry
+                        // (Assume yes for most errors if we were using a cached conn)
+                         debug!("DoQ query failed on cached connection: {}, retrying...", e);
+                         
+                         // Clear cache to ensure next loop gets a fresh one
+                         let mut guard = self.connection.write().await;
+                         *guard = None;
+                         continue;
                     }
-                    Err(e2) => {
-                        Err(anyhow!("Failed to read response: length prefix error: {}, fallback error: {}", e, e2))
-                    }
+                    return Err(e);
                 }
             }
         }
@@ -752,6 +762,8 @@ impl rustls::client::danger::ServerCertVerifier for NoVerifier {
 /// DoH3 (DNS over HTTP/3) Client
 ///
 /// Queries upstream DNS servers using DNS over HTTP/3 protocol.
+/// Note: Due to h3 library limitations, each query creates a new H3 session.
+/// The QUIC endpoint is reused for better performance.
 pub struct Doh3DnsClient {
     server: UpstreamServer,
 }
@@ -829,15 +841,13 @@ impl DnsClient for Doh3DnsClient {
         
         debug!("DoH3 connecting to {} (SNI: {}, path: {})", addr, sni_host, path);
 
-        // Get or create cached endpoint (reuse for better performance)
+        // Get or create cached endpoint (endpoint is reused, connection is not)
         let endpoint = get_quic_endpoint(QuicProtocol::Doh3, addr.is_ipv6())?;
+        let connect_sni = sni_host.as_str();
 
         let start = std::time::Instant::now();
 
-        // Connect - use "dns" as SNI for IP addresses
-        let connect_sni = sni_host.as_str();
-        debug!("DoH3 using SNI: {}", connect_sni);
-
+        // Create new QUIC connection for each query
         let connection = timeout(
             self.server.timeout,
             endpoint.connect(addr, connect_sni)?
@@ -846,14 +856,13 @@ impl DnsClient for Doh3DnsClient {
 
         debug!("DoH3 QUIC connection established");
 
-        // Create HTTP/3 connection
+        // Create HTTP/3 session
         let quinn_conn = h3_quinn::Connection::new(connection);
         let (mut driver, mut send_request) = h3::client::new(quinn_conn).await
             .map_err(|e| anyhow!("Failed to create H3 connection: {}", e))?;
 
         // Spawn driver task
         tokio::spawn(async move {
-            // poll_close returns () on success or ConnectionError on failure
             let _ = futures::future::poll_fn(|cx| driver.poll_close(cx)).await;
         });
 
@@ -899,7 +908,6 @@ impl DnsClient for Doh3DnsClient {
         while let Some(mut chunk) = stream.recv_data().await
             .map_err(|e| anyhow!("Failed to read response body: {}", e))? 
         {
-            // Use Buf trait to copy bytes
             while chunk.has_remaining() {
                 let bytes = chunk.chunk();
                 response_bytes.extend_from_slice(bytes);

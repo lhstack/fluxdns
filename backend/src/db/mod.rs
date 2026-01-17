@@ -31,6 +31,7 @@ impl Database {
     }
 
     /// Get the connection pool
+    #[allow(dead_code)]
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
@@ -219,7 +220,7 @@ impl Database {
             r#"
             INSERT OR IGNORE INTO server_listeners (protocol, enabled, bind_address, port)
             VALUES 
-                ('udp', TRUE, '0.0.0.0', 53),
+                ('udp', TRUE, '0.0.0.0', 10053),
                 ('doh', FALSE, '0.0.0.0', 443),
                 ('dot', FALSE, '0.0.0.0', 853),
                 ('doq', FALSE, '0.0.0.0', 853),

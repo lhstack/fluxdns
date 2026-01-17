@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::db::{Database, CreateQueryLog};
 use super::cache::{CacheKey, CacheManager};
@@ -68,6 +68,7 @@ pub struct DnsResolver {
 }
 
 
+#[allow(dead_code)]
 impl DnsResolver {
     /// Create a new DNS resolver
     pub fn new(
@@ -139,7 +140,7 @@ impl DnsResolver {
 
         // Step 0: Validate domain name - reject invalid domains
         if !Self::is_valid_domain(&query.name) {
-            info!(
+            debug!(
                 "[DNS Result] {} {} | Invalid domain (rejected) | {}ms",
                 query.name, query.record_type, start.elapsed().as_millis()
             );
@@ -150,12 +151,12 @@ impl DnsResolver {
             });
         }
 
-        info!("[DNS Query] {} {} (ID: {})", query.name, query.record_type, query.id);
+        debug!("[DNS Query] {} {} (ID: {})", query.name, query.record_type, query.id);
 
         // Step 1: Check if record type is disabled
         if let Some(ref db) = self.db {
             if self.is_record_type_disabled(db, &query.record_type.to_string()).await {
-                info!(
+                debug!(
                     "[DNS Result] {} {} | Disabled record type | {}ms",
                     query.name, query.record_type, start.elapsed().as_millis()
                 );
@@ -180,7 +181,7 @@ impl DnsResolver {
                 RewriteAction::MapToIp(ip) => format!("-> {}", ip),
                 RewriteAction::MapToDomain(domain) => format!("-> {}", domain),
             };
-            info!(
+            debug!(
                 "[DNS Result] {} {} | Rewrite(rule_id={}) {} | {}ms",
                 query.name, query.record_type, rewrite_result.rule_id, action_desc, metadata.response_time_ms
             );
@@ -193,7 +194,7 @@ impl DnsResolver {
             if let Some(response) = self.check_local_records(db, query).await? {
                 metadata.response_time_ms = start.elapsed().as_millis() as u64;
                 let answers: Vec<String> = response.answers.iter().map(|a| a.value.clone()).collect();
-                info!(
+                debug!(
                     "[DNS Result] {} {} | LocalRecord | {} | {}ms",
                     query.name, query.record_type, answers.join(", "), metadata.response_time_ms
                 );
@@ -212,7 +213,7 @@ impl DnsResolver {
             response.id = query.id;
 
             let answers: Vec<String> = response.answers.iter().map(|a| a.value.clone()).collect();
-            info!(
+            debug!(
                 "[DNS Result] {} {} | Cache | {} | {}ms",
                 query.name, query.record_type, answers.join(", "), metadata.response_time_ms
             );
@@ -243,7 +244,7 @@ impl DnsResolver {
         } else {
             answers.join(", ")
         };
-        info!(
+        debug!(
             "[DNS Result] {} {} | Upstream({}) | {} | {}ms",
             query.name, query.record_type, query_result.server_name, result_str, metadata.response_time_ms
         );

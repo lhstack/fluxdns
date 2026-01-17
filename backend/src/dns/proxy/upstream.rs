@@ -72,7 +72,7 @@ impl std::fmt::Display for UpstreamProtocol {
 
 
 /// Upstream server configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct UpstreamServer {
     /// Server ID from database
     pub id: i64,
@@ -88,6 +88,7 @@ pub struct UpstreamServer {
     pub enabled: bool,
 }
 
+#[allow(dead_code)]
 impl UpstreamServer {
     /// Create a new upstream server
     pub fn new(
@@ -341,6 +342,7 @@ impl UpstreamStats {
     }
 
     /// Get recent response times for debugging
+    #[allow(dead_code)]
     pub fn recent_times(&self) -> &[u64] {
         &self.recent_response_times
     }
@@ -377,6 +379,7 @@ pub struct UpstreamManager {
     health_check_interval: Duration,
 }
 
+#[allow(dead_code)]
 impl UpstreamManager {
     /// Create a new upstream manager without database
     pub fn new() -> Self {

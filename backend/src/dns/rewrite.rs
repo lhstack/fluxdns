@@ -31,6 +31,7 @@ pub enum MatchType {
     Regex,
 }
 
+#[allow(dead_code)]
 impl MatchType {
     /// Parse from string
     pub fn from_str(s: &str) -> Option<Self> {
@@ -64,6 +65,7 @@ pub enum RewriteAction {
     Block,
 }
 
+#[allow(dead_code)]
 impl RewriteAction {
     /// Parse action type and value from strings
     pub fn from_parts(action_type: &str, action_value: Option<&str>) -> Option<Self> {
@@ -119,6 +121,7 @@ pub struct RewriteRule {
     compiled_regex: Option<Regex>,
 }
 
+#[allow(dead_code)]
 impl RewriteRule {
     /// Create a new rewrite rule
     pub fn new(
@@ -245,6 +248,7 @@ pub struct RewriteEngine {
     db: Option<Arc<Database>>,
 }
 
+#[allow(dead_code)]
 impl RewriteEngine {
     /// Create a new rewrite engine without database
     pub fn new() -> Self {

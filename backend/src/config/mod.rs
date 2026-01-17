@@ -51,7 +51,7 @@ impl Default for AppConfig {
             admin_username: "admin".to_string(),
             admin_password: "admin".to_string(),
             log_path: PathBuf::from("logs"),
-            log_level: "info".to_string(),
+            log_level: "warn".to_string(),
             log_max_size: 10 * 1024 * 1024, // 10MB
             log_retention_days: 30,
         }
@@ -105,6 +105,7 @@ impl ConfigManager {
     }
 
     /// Create ConfigManager from explicit configs for testing
+    #[allow(dead_code)]
     pub fn from_configs(
         file_config: Option<PartialConfig>,
         env_config: Option<PartialConfig>,

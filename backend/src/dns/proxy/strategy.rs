@@ -16,8 +16,10 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::dns::message::DnsQuery;
-use super::client::{create_client, QueryResult};
+use super::client::{create_client, DnsClient, QueryResult};
 use super::upstream::{UpstreamManager, UpstreamServer};
+use std::collections::HashMap;
+use tokio::sync::Mutex;
 
 /// Query strategy types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,8 +81,11 @@ pub struct ProxyManager {
     strategy: RwLock<QueryStrategy>,
     /// Round-robin counter
     round_robin_counter: AtomicUsize,
+    /// Upstream client cache (keyed by UpstreamServer)
+    client_cache: Mutex<HashMap<UpstreamServer, Arc<dyn DnsClient>>>,
 }
 
+#[allow(dead_code)]
 impl ProxyManager {
     /// Create a new proxy manager
     pub fn new(upstream_manager: Arc<UpstreamManager>) -> Self {
@@ -88,6 +93,7 @@ impl ProxyManager {
             upstream_manager,
             strategy: RwLock::new(QueryStrategy::default()),
             round_robin_counter: AtomicUsize::new(0),
+            client_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -110,6 +116,19 @@ impl ProxyManager {
     /// Get the upstream manager
     pub fn upstream_manager(&self) -> &Arc<UpstreamManager> {
         &self.upstream_manager
+    }
+
+    /// Get or create a client for the given server
+    async fn get_client(&self, server: &UpstreamServer) -> Arc<dyn DnsClient> {
+        let mut cache = self.client_cache.lock().await;
+        
+        if let Some(client) = cache.get(server) {
+            return client.clone();
+        }
+
+        let client: Arc<dyn DnsClient> = Arc::from(create_client(server.clone()));
+        cache.insert(server.clone(), client.clone());
+        client
     }
 
     /// Query upstream servers using the configured strategy
@@ -171,6 +190,9 @@ impl ProxyManager {
             let protocol = server.protocol;
             let token = cancel_token.clone();
             
+            // Get client before spawning task to avoid capturing self
+            let client = self.get_client(&server).await;
+
             let handle = tokio::spawn(async move {
                 debug!("[{}] [Concurrent] Starting query to {} ({}) via {}", tid, server_name, server_addr, protocol);
                 
@@ -181,7 +203,6 @@ impl ProxyManager {
                         None
                     }
                     result = async {
-                        let client = create_client(server);
                         client.query(&q).await
                     } => {
                         // Log individual server result
@@ -356,7 +377,7 @@ impl ProxyManager {
     async fn query_server(&self, server: UpstreamServer, query: &DnsQuery, trace_id: &str) -> Result<QueryResult> {
         use tracing::{info, warn};
         
-        let client = create_client(server.clone());
+        let client = self.get_client(&server).await;
         
         match client.query(query).await {
             Ok(result) => {
@@ -397,7 +418,7 @@ impl ProxyManager {
                 trace_id, server.name, server.address, server.protocol
             );
             
-            let client = create_client(server.clone());
+            let client = self.get_client(&server).await;
             match client.query(query).await {
                 Ok(result) => {
                     info!(
