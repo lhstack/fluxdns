@@ -385,8 +385,11 @@ mod tests {
             query_type: Some("A".to_string()),
             client_ip: None,
             cache_hit: Some(true),
+            start_time: None,
+            end_time: None,
             limit: Some(50),
             offset: Some(0),
+            format: None,
         };
         let filter = QueryLogFilter::from(params);
         assert_eq!(filter.query_name, Some("example.com".to_string()));
