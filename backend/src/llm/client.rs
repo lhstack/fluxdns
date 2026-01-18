@@ -129,6 +129,14 @@ impl LlmClient {
         messages: &mut Vec<ChatMessage>,
         user_message: String,
     ) -> Result<String> {
+        // DeepSeek R1 compatibility: Clear reasoning_content from previous messages
+        // when a new user question starts (as per DeepSeek API documentation)
+        for message in messages.iter_mut() {
+            if message.role == Role::Assistant {
+                message.reasoning_content = None;
+            }
+        }
+
         // Add user message
         messages.push(ChatMessage {
             role: Role::User,
@@ -136,6 +144,7 @@ impl LlmClient {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         });
 
         // Loop to handle function calls
@@ -170,6 +179,7 @@ impl LlmClient {
                         name: Some(tool_call.function.name.clone()),
                         tool_calls: None,
                         tool_call_id: Some(tool_call.id.clone()),
+                        reasoning_content: None,
                     });
                 }
                 // Continue the loop to get the next response
@@ -193,6 +203,7 @@ impl LlmClient {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }];
 
         let request = ChatCompletionRequest {
@@ -227,6 +238,7 @@ mod tests {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();

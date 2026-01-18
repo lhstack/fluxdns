@@ -38,6 +38,11 @@
             </div>
           </div>
           <div class="header-actions" @mousedown.stop>
+            <el-tooltip content="功能列表" placement="bottom" :show-after="500">
+              <div class="action-btn" @click="toggleCapabilities">
+                <el-icon><Cpu /></el-icon>
+              </div>
+            </el-tooltip>
             <el-tooltip content="清空对话" placement="bottom" :show-after="500">
               <div class="action-btn" @click="clearMessages" :class="{ disabled: messages.length === 0 }">
                 <el-icon><Delete /></el-icon>
@@ -176,6 +181,36 @@
           </div>
         </div>
       </div>
+
+      <!-- 功能列表展示层 -->
+      <Transition name="capability-slide">
+        <div v-if="showCapabilities" class="capabilities-overlay">
+          <div class="overlay-header">
+            <div class="overlay-title">
+              <el-icon><Cpu /></el-icon>
+              <span>AI 技能图谱</span>
+            </div>
+            <div class="close-overlay" @click="showCapabilities = false">
+              <el-icon><ArrowRight /></el-icon>
+            </div>
+          </div>
+          <div class="overlay-content">
+            <div class="capability-intro">
+              AI 助手目前支持以下系统操作指令，您可以直接询问相关问题或通过提供的参数进行操作。
+            </div>
+            <div v-if="toolLoading" class="capability-loading">
+              <el-icon class="is-loading"><Loading /></el-icon>
+              <span>正在获取技能列表...</span>
+            </div>
+            <div v-else class="capability-list">
+              <div v-for="tool in tools" :key="tool.name" class="capability-item">
+                <div class="cap-name">{{ formatToolName(tool.name) }}</div>
+                <div class="cap-desc">{{ tool.description }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Transition>
     </div>
   </Transition>
 </template>
@@ -185,9 +220,17 @@ import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   ChatDotRound, Monitor, Delete, Close, MagicStick, User, Operation, 
-  Promotion, InfoFilled, FullScreen, CopyDocument, ArrowDown
+  Promotion, InfoFilled, FullScreen, CopyDocument, ArrowDown, Cpu,
+  ArrowRight, Loading
 } from '@element-plus/icons-vue'
 import api from '../api'
+
+// 类型定义
+interface ToolDefinition {
+  name: string
+  description: string
+  parameters: any
+}
 
 // 类型定义
 interface FunctionResult {
@@ -219,6 +262,11 @@ const inputMessage = ref('')
 const messages = ref<Message[]>([])
 const messagesContainer = ref<HTMLElement>()
 const activeQuickTab = ref('common')
+
+// 技能列表状态
+const showCapabilities = ref(false)
+const toolLoading = ref(false)
+const tools = ref<ToolDefinition[]>([])
 
 // 拖拽相关
 const position = ref({ x: 0, y: 0 })
@@ -298,7 +346,33 @@ function toggleChat() {
   if (isOpen.value) {
     checkConfiguration()
     scrollToBottom()
+  } else {
+    showCapabilities.value = false
   }
+}
+
+async function toggleCapabilities() {
+  showCapabilities.value = !showCapabilities.value
+  if (showCapabilities.value && tools.value.length === 0) {
+    fetchTools()
+  }
+}
+
+async function fetchTools() {
+  toolLoading.value = true
+  try {
+    const { data } = await api.get('/api/llm/tools')
+    tools.value = data
+  } catch (error) {
+    console.error('Failed to fetch tools:', error)
+  } finally {
+    toolLoading.value = false
+  }
+}
+
+function formatToolName(name: string): string {
+  // 转换下划线为更易读的格式
+  return name.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
 }
 
 function toggleFullscreen() {
@@ -472,12 +546,12 @@ onMounted(() => {
   width: 100%;
   height: 100%;
   border-radius: 50%;
-  background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   display: flex;
   align-items: center;
   justify-content: center;
   color: white;
-  box-shadow: 0 8px 32px rgba(79, 172, 254, 0.5);
+  box-shadow: 0 8px 32px rgba(102, 126, 234, 0.5);
   position: relative;
   z-index: 2;
 }
@@ -491,7 +565,7 @@ onMounted(() => {
   width: 100%;
   height: 100%;
   border-radius: 50%;
-  background: rgba(79, 172, 254, 0.4);
+  background: rgba(102, 126, 234, 0.4);
   animation: pulse 2s infinite;
 }
 
@@ -555,10 +629,10 @@ onMounted(() => {
   border-radius: 20px;
   padding: 1px; /* 边框宽度 */
   background: linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0)); 
-  -webkit-mask: 
-     linear-gradient(#fff 0 0) content-box, 
-     linear-gradient(#fff 0 0);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
+  mask-composite: exclude;
   pointer-events: none;
   z-index: 2;
 }
@@ -600,12 +674,12 @@ onMounted(() => {
   width: 40px;
   height: 40px;
   border-radius: 12px;
-  background: linear-gradient(135deg, #4facfe, #00f2fe);
+  background: linear-gradient(135deg, #667eea, #764ba2);
   display: flex;
   align-items: center;
   justify-content: center;
   color: white;
-  box-shadow: 0 4px 12px rgba(79, 172, 254, 0.3);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
 }
 
 .status-dot {
@@ -711,14 +785,14 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #4facfe;
+  color: #667eea;
 }
 
 .logo-ring {
   position: absolute;
   inset: 0;
   border-radius: 24px;
-  border: 1px solid rgba(79, 172, 254, 0.3);
+  border: 1px solid rgba(102, 126, 234, 0.3);
   transform: rotate(45deg);
 }
 
@@ -771,8 +845,8 @@ onMounted(() => {
 }
 
 .action-tab.active {
-  background: rgba(79, 172, 254, 0.2);
-  color: #4facfe;
+  background: rgba(102, 126, 234, 0.2);
+  color: #667eea;
   font-weight: 600;
 }
 
@@ -796,8 +870,8 @@ onMounted(() => {
 }
 
 .quick-action-card:hover {
-  background: rgba(79, 172, 254, 0.1);
-  border-color: rgba(79, 172, 254, 0.3);
+  background: rgba(102, 126, 234, 0.1);
+  border-color: rgba(102, 126, 234, 0.3);
   transform: translateY(-2px);
 }
 
@@ -844,9 +918,9 @@ onMounted(() => {
 }
 
 .message-row.assistant .message-avatar {
-  background: linear-gradient(135deg, rgba(79, 172, 254, 0.2), rgba(0, 242, 254, 0.1));
-  color: #4facfe;
-  border: 1px solid rgba(79, 172, 254, 0.2);
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.2), rgba(118, 75, 162, 0.1));
+  color: #667eea;
+  border: 1px solid rgba(102, 126, 234, 0.2);
 }
 
 .message-bubble {
@@ -855,6 +929,9 @@ onMounted(() => {
   font-size: 14px;
   line-height: 1.6;
   position: relative;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  overflow: hidden;
 }
 
 .message-row.assistant .message-bubble {
@@ -865,10 +942,10 @@ onMounted(() => {
 }
 
 .message-row.user .message-bubble {
-  background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: #fff;
   border-top-right-radius: 4px;
-  box-shadow: 0 4px 12px rgba(79, 172, 254, 0.3);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
 }
 
 /* Typing Indicator */
@@ -917,7 +994,7 @@ onMounted(() => {
 
 .input-wrapper:focus-within {
   background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(79, 172, 254, 0.3);
+  border-color: rgba(102, 126, 234, 0.3);
 }
 
 .custom-textarea :deep(.el-textarea__inner) {
@@ -936,7 +1013,7 @@ onMounted(() => {
 }
 
 .send-btn {
-  background: linear-gradient(135deg, #4facfe, #00f2fe);
+  background: linear-gradient(135deg, #667eea, #764ba2);
   border: none;
   width: 36px;
   height: 36px;
@@ -966,19 +1043,136 @@ onMounted(() => {
   padding-top: 8px;
 }
 
+/* Capabilities Overlay */
+.capabilities-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: #0f172a;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  border-radius: 20px;
+}
+
+.overlay-header {
+  padding: 20px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.overlay-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #fff;
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.overlay-title .el-icon {
+  color: #667eea;
+}
+
+.close-overlay {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.close-overlay:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.overlay-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.capability-intro {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.6;
+  margin-bottom: 24px;
+}
+
+.capability-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 0;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.capability-loading .el-icon {
+  font-size: 24px;
+}
+
+.capability-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.capability-item {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  padding: 16px;
+  border-radius: 12px;
+}
+
+.cap-name {
+  color: #667eea;
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 6px;
+  font-family: monospace;
+}
+
+.cap-desc {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1.5;
+}
+
+/* Overlay Animation */
+.capability-slide-enter-active,
+.capability-slide-leave-active {
+  transition: all 0.4s cubic-bezier(0.165, 0.84, 0.44, 1);
+}
+
+.capability-slide-enter-from,
+.capability-slide-leave-to {
+  transform: translateX(100%);
+}
+
 .function-header {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #4facfe;
+  color: #667eea;
   cursor: pointer;
   padding: 4px 8px;
   border-radius: 6px;
 }
 
 .function-header:hover {
-  background: rgba(79, 172, 254, 0.1);
+  background: rgba(102, 126, 234, 0.1);
 }
 
 .arrow {

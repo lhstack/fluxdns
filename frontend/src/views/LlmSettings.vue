@@ -2,17 +2,16 @@
   <div class="llm-settings-container">
     <div class="header-section">
       <div class="title-group">
-        <h1 class="glow-text">AI 助手控制中心</h1>
+        <h1 class="page-title">AI 助手控制中心</h1>
         <p class="subtitle">配置大语言模型以驱动您的智能 DNS 管理专家</p>
       </div>
-      <el-button type="primary" plain class="glass-btn" @click="fetchConfigs">
+      <el-button type="primary" plain class="action-btn" @click="fetchConfigs">
         <el-icon><Refresh /></el-icon>
         <span>刷新状态</span>
       </el-button>
     </div>
 
-    <!-- 活跃配置展示区 (流光边框卡片) -->
-    <div v-if="activeConfig" class="active-config-wrapper animated-border">
+    <div v-if="activeConfig" class="active-config-banner">
       <div class="active-config-content">
         <div class="active-info-main">
           <div class="active-provider">
@@ -42,7 +41,7 @@
           </div>
           <el-button 
             type="success" 
-            class="neon-btn-compact" 
+            size="small"
             @click="testConfig(activeConfig)" 
             :loading="testingId === activeConfig.id"
           >
@@ -54,10 +53,10 @@
     </div>
 
     <div class="main-layout mt-4">
-      <el-row :gutter="24">
+      <el-row :gutter="24" class="equal-height-row">
         <!-- 厂商选择 (左侧) -->
-        <el-col :xs="24" :lg="14">
-          <div class="glass-card full-height">
+        <el-col :xs="24" :lg="16">
+          <div class="settings-card full-height-card">
             <div class="card-header">
               <el-icon><Grid /></el-icon>
               <span>选择 LLM 服务商</span>
@@ -67,7 +66,7 @@
               <div
                 v-for="provider in providers"
                 :key="provider.name"
-                class="provider-glass-item"
+                class="provider-card"
                 :class="{ active: selectedProvider?.name === provider.name }"
                 @click="selectProvider(provider)"
               >
@@ -78,7 +77,7 @@
                   <div class="provider-text-content">
                     <span class="p-name">{{ provider.display_name }}</span>
                     <div class="p-status-row">
-                      <el-tag v-if="getProviderConfig(provider.name)?.enabled" type="success" size="small" class="neon-tag-mini">Running</el-tag>
+                      <el-tag v-if="getProviderConfig(provider.name)?.enabled" type="success" size="small">在线</el-tag>
                       <span v-else-if="getProviderConfig(provider.name)" class="p-configured-text">已配置</span>
                       <span v-else class="p-models">{{ provider.models[0]?.split('-')[0] || 'Default' }}...</span>
                     </div>
@@ -114,8 +113,8 @@
         </el-col>
 
         <!-- 配置表单 (右侧) -->
-        <el-col :xs="24" :lg="10">
-          <div class="glass-card config-form-section">
+        <el-col :xs="24" :lg="8">
+          <div class="settings-card config-form-section full-height-card">
             <div class="card-header">
               <el-icon><Setting /></el-icon>
               <span>{{ editingConfig ? '编辑连接参数' : '配置新连接' }}</span>
@@ -130,15 +129,15 @@
               v-loading="saving"
             >
               <el-form-item label="厂商标识" prop="provider">
-                <el-input v-model="form.provider" disabled class="glass-input" />
+                <el-input v-model="form.provider" disabled />
               </el-form-item>
               
               <el-form-item label="友好名称" prop="display_name">
-                <el-input v-model="form.display_name" placeholder="例如: 我的开发助手" class="glass-input" />
+                <el-input v-model="form.display_name" placeholder="例如: 我的开发助手" />
               </el-form-item>
 
               <el-form-item label="API 端点 (Base URL)" prop="api_base_url">
-                <el-input v-model="form.api_base_url" placeholder="https://..." class="glass-input" />
+                <el-input v-model="form.api_base_url" placeholder="https://..." />
               </el-form-item>
 
               <el-form-item label="API 访问密钥" prop="api_key">
@@ -147,7 +146,6 @@
                   type="password"
                   show-password
                   placeholder="sk-..."
-                  class="glass-input"
                 />
               </el-form-item>
 
@@ -157,7 +155,6 @@
                   placeholder="选择预设或输入" 
                   filterable 
                   allow-create 
-                  class="glass-select"
                 >
                   <el-option
                     v-for="model in selectedProvider?.models || []"
@@ -169,8 +166,8 @@
               </el-form-item>
 
               <div class="form-footer">
-                <el-button @click="resetForm" class="glass-btn">取消</el-button>
-                <el-button type="primary" class="glow-btn" @click="submitForm" :loading="saving">
+                <el-button @click="resetForm" class="action-btn">取消</el-button>
+                <el-button type="primary" @click="submitForm" :loading="saving">
                   {{ editingConfig ? '保存更新' : '创建配置' }}
                 </el-button>
               </div>
@@ -328,8 +325,8 @@ async function submitForm() {
       } else {
         await api.post('/api/llm/config', form)
         ElMessage.success('配置已添加')
+        resetForm()
       }
-      resetForm()
       fetchConfigs()
     } catch (error) {
       ElMessage.error('保存失败')
@@ -407,46 +404,56 @@ onMounted(() => {
   max-width: 1400px;
   margin: 0 auto;
   min-height: 100vh;
-  background: radial-gradient(circle at top right, rgba(79, 172, 254, 0.05), transparent 400px),
-              radial-gradient(circle at bottom left, rgba(0, 242, 254, 0.05), transparent 400px);
 }
 
 .header-section {
   display: flex;
   justify-content: space-between;
-  align-items: flex-end;
-  margin-bottom: 30px;
+  align-items: center;
+  margin-bottom: 24px;
 }
 
-.glow-text {
+.page-title {
   margin: 0;
   font-size: 32px;
   font-weight: 800;
-  background: linear-gradient(135deg, #fff, #4facfe);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  filter: drop-shadow(0 0 10px rgba(79, 172, 254, 0.3));
+  color: #303133;
 }
 
 .subtitle {
   margin: 8px 0 0;
-  color: rgba(255, 255, 255, 0.5);
+  color: #606266;
   font-size: 15px;
 }
 
-/* 玻璃拟态卡片通用 */
-.glass-card {
-  background: rgba(30, 41, 59, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(16px);
-  border-radius: 20px;
+/* 标准白色卡片 */
+.settings-card {
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  border-radius: 12px;
   padding: 24px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-  transition: border-color 0.3s;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  transition: all 0.3s;
+  display: flex;
+  flex-direction: column;
 }
 
-.glass-card:hover {
-  border-color: rgba(255, 255, 255, 0.2);
+.full-height-card {
+  height: 100%;
+}
+
+.equal-height-row {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.equal-height-row > .el-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-card:hover {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
 }
 
 .card-header {
@@ -456,110 +463,60 @@ onMounted(() => {
   margin-bottom: 24px;
   font-size: 18px;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.9);
+  color: #303133;
 }
 
-.card-header.space-between {
-  justify-content: space-between;
-}
-
-/* 活跃配置卡片 - 流光边框 */
-.active-config-wrapper {
-  position: relative;
-  background: rgba(15, 23, 42, 0.6);
-  border-radius: 24px;
+/* 活跃配置横幅 */
+.active-config-banner {
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  border-radius: 12px;
   overflow: hidden;
-  padding: 2px; /* 边框厚度 */
-  margin-bottom: 30px;
-}
-
-.animated-border::before {
-  content: '';
-  position: absolute;
-  top: -50%;
-  left: -50%;
-  width: 200%;
-  height: 200%;
-  background: conic-gradient(
-    transparent, 
-    #10b981, 
-    #34d399,
-    transparent 30%
-  );
-  animation: rotate 4s linear infinite;
-  z-index: 0;
-}
-
-@keyframes rotate {
-  100% { transform: rotate(360deg); }
-}
-
-/* 活跃配置卡片 - 极简流光 */
-.active-config-wrapper {
-  position: relative;
-  background: rgba(15, 23, 42, 0.4);
-  border-radius: 20px;
-  overflow: hidden;
-  padding: 1px;
   margin-bottom: 24px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
 .active-config-content {
-  position: relative;
-  z-index: 1;
-  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-  border-radius: 19px;
-  padding: 16px 24px;
+  padding: 18px 24px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 30px;
-}
-
-.active-info-main {
-  display: flex;
-  align-items: center;
+  gap: 40px;
 }
 
 .active-provider {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 16px;
 }
 
 .provider-icon-large {
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 22px;
   color: white;
   font-weight: 800;
-  box-shadow: 0 0 15px rgba(0, 0, 0, 0.3);
-}
-
-.provider-texts {
-  display: flex;
-  flex-direction: column;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
 .status-indicator {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 10px;
-  color: #10b981;
-  font-weight: 700;
-  text-transform: uppercase;
-  margin-bottom: 2px;
+  font-size: 12px;
+  color: #67c23a;
+  font-weight: 600;
+  margin-bottom: 4px;
 }
 
 .pulse-dot {
-  width: 6px;
-  height: 6px;
-  background: #10b981;
+  width: 8px;
+  height: 8px;
+  background: #67c23a;
   border-radius: 50%;
   animation: pulse 2s infinite;
 }
@@ -573,84 +530,74 @@ onMounted(() => {
 .provider-name-text {
   margin: 0;
   font-size: 20px;
-  color: white;
+  font-weight: 700;
+  color: #303133;
   line-height: 1.2;
 }
 
 .model-tag {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.3);
+  font-size: 13px;
+  color: #909399;
   margin-top: 2px;
 }
 
 .active-info-stats {
   display: flex;
   align-items: center;
-  gap: 40px;
-  background: rgba(0, 0, 0, 0.2);
-  padding: 10px 24px;
-  border-radius: 12px;
-}
-
-.stat-box {
-  display: flex;
-  flex-direction: column;
+  gap: 32px;
 }
 
 .stat-box .label {
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.3);
+  font-size: 11px;
+  color: #909399;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  margin-bottom: 4px;
 }
 
 .stat-box .value {
-  font-size: 13px;
-  color: rgba(255, 255, 255, 0.7);
+  font-size: 14px;
+  color: #606266;
   font-family: 'JetBrains Mono', monospace;
 }
 
 .stat-divider {
   width: 1px;
-  height: 24px;
-  background: rgba(255, 255, 255, 0.05);
+  height: 32px;
+  background: #ebeef5;
 }
 
-.neon-btn-compact {
-  height: 30px !important;
-  background: rgba(16, 185, 129, 0.1) !important;
-  border: 1px solid rgba(16, 185, 129, 0.3) !important;
-  color: #10b981 !important;
-  font-size: 12px !important;
-  border-radius: 6px !important;
-}
-
-/* 厂商选择网格 - 优化协调性 */
+/* 厂商选择网格 */
 .providers-grid-container {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 16px;
+  flex: 1;
 }
 
-.provider-glass-item {
+.provider-card {
   position: relative;
   display: flex;
   align-items: center;
-  padding: 16px 20px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  padding: 20px;
+  border-radius: 12px;
+  background: #f8f9fa;
+  border: 1px solid #ebeef5;
   cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
-  min-height: 80px;
+  transition: all 0.3s;
+  overflow: hidden;
 }
 
-.provider-main-info {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  flex: 1;
-  min-width: 0;
+.provider-card:hover {
+  background: #f0f2f5;
+  border-color: #dcdfe6;
+  transform: translateY(-2px);
+}
+
+.provider-card.active {
+  background: #f0f7ff;
+  border-color: #667eea;
+  box-shadow: 0 0 0 1px #667eea;
 }
 
 .provider-badge-icon {
@@ -664,92 +611,71 @@ onMounted(() => {
   font-size: 18px;
   font-weight: 700;
   flex-shrink: 0;
-}
-
-.provider-text-content {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
 }
 
 .p-name {
   font-weight: 600;
-  color: white;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.p-status-row {
-  margin-top: 4px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-}
-
-.neon-tag-mini {
-  background: rgba(16, 185, 129, 0.15) !important;
-  border-color: rgba(16, 185, 129, 0.3) !important;
-  color: #10b981 !important;
-  font-size: 9px !important;
-  padding: 0 4px !important;
-  line-height: 16px !important;
-  height: 16px !important;
+  color: #303133;
 }
 
 .p-configured-text {
   font-size: 11px;
-  color: #4facfe;
+  color: #667eea;
 }
 
 .p-models {
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.3);
+  color: #909399;
 }
 
 .card-overlay-actions {
+  position: absolute;
+  top: 12px;
+  right: 12px;
   display: flex;
-  gap: 4px;
+  gap: 6px;
   opacity: 0;
-  transition: opacity 0.2s;
-  margin-left: 10px;
+  transform: translateY(-5px);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.provider-glass-item:hover .card-overlay-actions {
+.provider-card:hover .card-overlay-actions {
   opacity: 1;
+  transform: translateY(0);
 }
 
 .mini-op-btn {
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.05);
-  color: rgba(255, 255, 255, 0.5);
+  background: #fff;
+  border: 1px solid #dcdfe6;
+  color: #606266;
   font-size: 12px;
+  transition: all 0.2s;
 }
 
-.mini-op-btn:hover { background: rgba(255, 255, 255, 0.1); color: white; }
-.mini-op-btn.success:hover { background: #10b981; }
-.mini-op-btn.primary:hover { background: #4facfe; }
+.mini-op-btn:hover { border-color: transparent; color: white; }
+.mini-op-btn.success:hover { background: #67c23a; }
+.mini-op-btn.primary:hover { background: #667eea; }
 .mini-op-btn.danger:hover { background: #f56c6c; }
 
 .provider-select-mark {
-  color: #4facfe;
-  font-size: 16px;
-  margin-left: 10px;
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  color: #667eea;
+  font-size: 18px;
 }
 
-/* 右侧配置表单优化 */
-.config-form-section {
-  position: sticky;
-  top: 30px;
-}
-
-.premium-form :deep(.el-form-item) {
-  margin-bottom: 20px;
+/* 表单样式调整 */
+.premium-form :deep(.el-form-item__label) {
+  color: #606266;
+  font-weight: 600;
 }
 
 .form-footer {

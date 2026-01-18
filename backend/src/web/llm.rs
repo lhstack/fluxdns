@@ -36,6 +36,7 @@ pub fn llm_router() -> Router<LlmState> {
         .route("/providers", get(get_providers))
         // Chat endpoints
         .route("/chat", post(chat))
+        .route("/tools", get(get_tools))
         .route("/conversations", get(get_conversations))
         .route("/conversations", delete(clear_conversations))
 }
@@ -293,6 +294,7 @@ async fn chat(
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         },
     ];
 
@@ -311,6 +313,19 @@ async fn chat(
             })
         }
     }
+}
+
+/// Get all available tools (functions)
+async fn get_tools(
+    State(state): State<LlmState>,
+) -> Result<Json<Vec<crate::llm::types::FunctionDefinition>>, ApiError> {
+    let registry = FunctionRegistry::new(state.app_state.clone());
+    let definitions = registry.get_tool_definitions()
+        .into_iter()
+        .map(|t| t.function)
+        .collect();
+    
+    Ok(Json(definitions))
 }
 
 /// Get conversation history
