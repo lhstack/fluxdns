@@ -29,6 +29,12 @@ impl Database {
             .connect(database_url)
             .await?;
 
+        // Enable WAL mode for concurrent read/write
+        // Without this, reads are blocked when query_logs is being written
+        sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(&pool)
+            .await?;
+
         let stats_cache = Arc::new(StatsCache::empty());
         let db = Self { pool, stats_cache };
         db.run_migrations().await?;

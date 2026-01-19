@@ -58,8 +58,8 @@ pub struct SimpleUpstreamStatus {
 pub async fn stats_stream(
     State(state): State<StatsState>,
 ) -> Sse<impl Stream<Item = Result<Event, axum::Error>>> {
-    // Determine total upstreams upfront (or refresh periodically if needed, but for now fixed list is okay-ish, though ideally dynamic)
-    // Actually inside the loop is better.
+    // Pre-fetch upstream servers list (changes infrequently)
+    let servers = state.db.upstream_servers().list().await.unwrap_or_default();
 
     let mut previous_total_queries = 0i64;
     // Initial fetch to set baseline
@@ -70,36 +70,24 @@ pub async fn stats_stream(
     let stream = IntervalStream::new(interval(Duration::from_secs(1)))
         .then(move |_| {
             let state = state.clone();
+            let servers = servers.clone();
             async move {
-                // 1. Get Query Stats (for QPS and Total)
+                // 1. Get Query Stats (for QPS and Total) - from memory cache
                 let query_stats = state.db.query_logs().get_stats().await.unwrap_or_default();
                 let current_total = query_stats.total_queries;
                 
-                // Calculate QPS (simple diff since last second)
-                // Note: unique reference to previous_total_queries is tricky in closure.
-                // We might calculate simple "total queries today" difference, or just QPS from a runtime counter if we had one.
-                // Limitation: accessing mutable state in `stream.map` closure is hard without RefCell/Mutex, 
-                // but `then` with async block + state cloning means we prefer fetching "current" snapshot.
-                // Actually, to do delta QPS correctly in a stream, we need `scan` or similar.
-                
-                // Let's rely on `upstream_manager` or `db` providing "queries per second" if possible?
-                // `db.query_logs().get_stats()` is typically slow for QPS loop (COUNT(*)).
-                // BUT, let's assume it's fast enough or indexed. 
-                // Wait, `query_stats` probably returns `total_queries`.
-                
-                // 2. Get Cache Stats
+                // 2. Get Cache Stats - from memory
                 let cache_stats = state.cache.stats().await;
                 
-                // 3. Get Upstream Stats
+                // 3. Get Upstream Stats - from memory (servers list pre-fetched)
                 let upstream_stats = state.upstream_manager.get_all_stats().await;
-                let servers = state.db.upstream_servers().list().await.unwrap_or_default();
                 
                 let total_upstreams = servers.len();
                 let mut healthy_upstreams = 0;
                 let mut total_latency = 0;
                 let mut latency_count = 0;
                 
-                let simple_upstreams: Vec<SimpleUpstreamStatus> = servers.into_iter().map(|s| {
+                let simple_upstreams: Vec<SimpleUpstreamStatus> = servers.iter().map(|s| {
                     let stats = upstream_stats.get(&s.id);
                     let healthy = stats.map(|st| st.is_healthy()).unwrap_or(s.enabled); // Default to enabled status if no stats
                     if healthy && s.enabled {
@@ -114,7 +102,7 @@ pub async fn stats_stream(
 
                     SimpleUpstreamStatus {
                         id: s.id,
-                        name: s.name,
+                        name: s.name.clone(),
                         healthy,
                         latency_ms: lat,
                     }
