@@ -97,11 +97,6 @@ impl StatsCache {
             queries_today: self.queries_today.load(Ordering::SeqCst),
         }
     }
-
-    /// Get total queries count (for QPS calculation)
-    pub fn total_queries(&self) -> i64 {
-        self.total_queries.load(Ordering::SeqCst)
-    }
 }
 
 /// Cached query statistics
