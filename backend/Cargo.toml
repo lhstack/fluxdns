@@ -1,6 +1,6 @@
 [package]
 name = "fluxdns"
-version = "0.1.0"
+version = "1.1.4"
 edition = "2021"
 description = "FluxDNS - A modern DNS proxy service with multi-protocol support"
 authors = ["lhstack@foxmail.com"]

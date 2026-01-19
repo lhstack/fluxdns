@@ -503,19 +503,24 @@ impl UpstreamServerRepository {
 }
 
 
+use std::sync::Arc;
+use crate::db::stats_cache::StatsCache;
+
 /// Repository for query logs
 pub struct QueryLogRepository {
     pool: SqlitePool,
+    stats_cache: Arc<StatsCache>,
 }
 
 impl QueryLogRepository {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub fn new(pool: SqlitePool, stats_cache: Arc<StatsCache>) -> Self {
+        Self { pool, stats_cache }
     }
 
     /// Create a new query log entry
     pub async fn create(&self, log: CreateQueryLog) -> Result<QueryLog> {
         let now = Utc::now();
+        let cache_hit = log.cache_hit;
         let result = sqlx::query_as::<_, QueryLog>(
             r#"
             INSERT INTO query_logs (client_ip, query_name, query_type, response_code, response_time, cache_hit, upstream_used, created_at)
@@ -533,6 +538,9 @@ impl QueryLogRepository {
         .bind(now)
         .fetch_one(&self.pool)
         .await?;
+
+        // Update memory cache
+        self.stats_cache.record_query(cache_hit).await;
 
         Ok(result)
     }
@@ -668,8 +676,18 @@ impl QueryLogRepository {
         Ok(result.and_then(|r| if r.0.is_empty() { None } else { Some(r.0) }))
     }
 
-    /// Get query statistics
+    /// Get query statistics (fast, from memory)
     pub async fn get_stats(&self) -> Result<QueryStats> {
+        let stats = self.stats_cache.get_stats().await;
+        Ok(QueryStats {
+            total_queries: stats.total_queries,
+            cache_hits: stats.cache_hits,
+            queries_today: stats.queries_today,
+        })
+    }
+
+    /// Get query statistics (slow, from DB)
+    pub async fn get_stats_db(&self) -> Result<QueryStats> {
         let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM query_logs")
             .fetch_one(&self.pool)
             .await?;
@@ -979,6 +997,55 @@ mod tests {
 
         let not_found = repo.get("query_strategy").await.unwrap();
         assert!(not_found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stats_cache() {
+        let db = setup_test_db().await;
+        let repo = db.query_logs();
+
+        // Initial stats should be empty
+        let initial_stats = repo.get_stats().await.unwrap();
+        assert_eq!(initial_stats.total_queries, 0);
+
+        // Create a log
+        repo.create(CreateQueryLog {
+            client_ip: "127.0.0.1".to_string(),
+            query_name: "test.com".to_string(),
+            query_type: "A".to_string(),
+            response_code: Some("NOERROR".to_string()),
+            response_time: Some(10),
+            cache_hit: true,
+            upstream_used: Some("test".to_string()),
+        }).await.unwrap();
+
+        // Stats should update immediately (from cache)
+        let stats = repo.get_stats().await.unwrap();
+        assert_eq!(stats.total_queries, 1);
+        assert_eq!(stats.cache_hits, 1);
+        assert_eq!(stats.queries_today, 1);
+        
+        // Create another log (no cache hit)
+        repo.create(CreateQueryLog {
+            client_ip: "127.0.0.1".to_string(),
+            query_name: "test2.com".to_string(),
+            query_type: "A".to_string(),
+            response_code: Some("NOERROR".to_string()),
+            response_time: Some(20),
+            cache_hit: false,
+            upstream_used: Some("test".to_string()),
+        }).await.unwrap();
+        
+        let stats = repo.get_stats().await.unwrap();
+        assert_eq!(stats.total_queries, 2);
+        assert_eq!(stats.cache_hits, 1);
+        assert_eq!(stats.queries_today, 2);
+        
+        // Verify DB stats matches
+        let db_stats = repo.get_stats_db().await.unwrap();
+        assert_eq!(db_stats.total_queries, 2);
+        assert_eq!(db_stats.cache_hits, 1);
+        assert_eq!(db_stats.queries_today, 2);
     }
 }
 

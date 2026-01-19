@@ -93,7 +93,7 @@ curl "https://fluxdns.lhstack.xyz/dns-query?dns=q80BAAABAAAAAAAAA3d3dwdleGFtcGxl
 - **Latency Monitoring** - Response time trend analysis
 - **Upstream Status** - Health status of each upstream server
 - **Top N Statistics** - Popular domains and active clients ranking
-- **SSE Real-time Push** - Auto-updating data without refresh
+- **SSE Real-time Push** - High-performance in-memory caching, sub-millisecond latency for massive datasets
 
 ### 🔔 Alert Notifications
 
@@ -354,14 +354,19 @@ All management APIs require JWT authentication with `/api/` prefix:
 
 ## 📝 Changelog
 
-### v1.1.2 (Latest)
+### v1.1.4 (Latest)
+- 🚀 **Performance Optimization** - Refactored SSE real-time stats with in-memory atomic caching, enabling millisecond-level response
+- ✨ **IPv6 Support** - Full IPv6 address support for upstream DNS servers
+- 🐛 **UI Fixes** - Fixed content overflow issues in query logs and upstream lists
+
+### v1.1.3
 - ✨ Dynamic listener management (no restart required)
 - ✨ DoH with real HTTPS support
 - ✨ TLS certificate info viewer
 - ✨ Certificate edit pre-fill feature
 - 🐛 Fix strict startup validation logic
 
-### v1.1.1
+### v1.1.2
 - ✨ AI assistant
 - ✨ Real-time monitoring dashboard
 - ✨ Top N statistics

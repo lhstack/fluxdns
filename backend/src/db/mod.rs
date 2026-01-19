@@ -4,16 +4,21 @@
 
 mod models;
 pub mod repository;
+pub mod stats_cache;
 
 pub use models::*;
 pub use repository::*;
+pub use stats_cache::*;
 
 use anyhow::Result;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 
+use std::sync::Arc;
+
 /// Database wrapper providing connection pool and repositories
 pub struct Database {
     pool: SqlitePool,
+    stats_cache: Arc<StatsCache>,
 }
 
 impl Database {
@@ -24,8 +29,10 @@ impl Database {
             .connect(database_url)
             .await?;
 
-        let db = Self { pool };
+        let stats_cache = Arc::new(StatsCache::empty());
+        let db = Self { pool, stats_cache };
         db.run_migrations().await?;
+        db.init_stats_cache().await?; // Initial population from DB
 
         Ok(db)
     }
@@ -53,7 +60,7 @@ impl Database {
 
     /// Get query logs repository
     pub fn query_logs(&self) -> QueryLogRepository {
-        QueryLogRepository::new(self.pool.clone())
+        QueryLogRepository::new(self.pool.clone(), self.stats_cache.clone())
     }
 
     /// Get system config repository
@@ -192,6 +199,12 @@ impl Database {
 
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_query_logs_query_name ON query_logs(query_name)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_query_logs_cache_hit ON query_logs(cache_hit)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -360,6 +373,19 @@ impl Database {
             tracing::info!("Seeded {} default upstream DNS servers", default_servers.len());
         }
 
+        Ok(())
+    }
+
+    /// Initialize stats cache from database
+    async fn init_stats_cache(&self) -> Result<()> {
+        let repo = self.query_logs();
+        // We use the slow query once at startup
+        let stats = repo.get_stats_db().await.unwrap_or_default(); 
+        self.stats_cache.initialize(
+            stats.total_queries, 
+            stats.cache_hits, 
+            stats.queries_today
+        ).await;
         Ok(())
     }
 }
