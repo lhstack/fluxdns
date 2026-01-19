@@ -77,10 +77,10 @@ impl ListenerManager {
             }
         };
 
-        if !listener.enabled {
-            info!("Listener {} is disabled, skipping start", protocol);
-            return Ok(());
-        }
+
+        // NOTE: Removed enabled check here because the caller (listeners.rs)
+        // has already verified the enabled state from the database update response.
+        // Re-reading from DB here could get stale data due to transaction timing.
 
         let bind_addr = format!("{}:{}", listener.bind_address, listener.port);
         let addr: SocketAddr = match bind_addr.parse() {
@@ -229,6 +229,7 @@ impl ListenerManager {
                      use hyper::server::conn::http1;
                      use hyper::service::service_fn;
                      use hyper_util::rt::TokioIo;
+                     use axum::extract::ConnectInfo;
                      
                      loop {
                          let (stream, peer_addr) = match tcp_listener.accept().await {
@@ -247,9 +248,12 @@ impl ListenerManager {
                                  Ok(tls_stream) => {
                                      let io = TokioIo::new(tls_stream);
                                      let svc = app.clone();
+                                     let addr = peer_addr;
                                      
-                                     let service = service_fn(move |req| {
+                                     let service = service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
                                          let svc = svc.clone();
+                                         // Inject ConnectInfo extension for client IP extraction
+                                         req.extensions_mut().insert(ConnectInfo(addr));
                                          async move {
                                              svc.oneshot(req).await
                                          }

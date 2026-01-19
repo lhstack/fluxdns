@@ -36,9 +36,7 @@ pub struct ListenerResponse {
     pub has_tls_key: bool,
     pub requires_tls: bool,
     pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_cert: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_key: Option<String>,
 }
 
@@ -184,8 +182,9 @@ async fn update_listener(
         enabled: request.enabled,
         bind_address: request.bind_address,
         port: request.port,
-        tls_cert: request.tls_cert.map(|s| if s.trim().is_empty() { None } else { Some(s) }).flatten(),
-        tls_key: request.tls_key.map(|s| if s.trim().is_empty() { None } else { Some(s) }).flatten(),
+        // Don't flatten/filter empty strings here. Passes Some("") to repository to indicate truncation.
+        tls_cert: request.tls_cert.map(|s| s.trim().to_string()),
+        tls_key: request.tls_key.map(|s| s.trim().to_string()),
     };
 
     let listener = state.db.server_listeners().update(&protocol, update).await.map_err(|e| ApiError {

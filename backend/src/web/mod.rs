@@ -15,7 +15,7 @@ pub mod static_files;
 pub mod status;
 pub mod strategy;
 pub mod upstreams;
-pub mod stats;
+
 
 pub use auth::{
     auth_middleware, ApiError, AuthService, AuthState,
@@ -34,4 +34,4 @@ pub use status::{status_router, StatusState};
 pub use strategy::{strategy_router, StrategyState};
 pub use upstreams::{upstreams_router, UpstreamsState};
 pub use llm::{llm_router, LlmState};
-pub use stats::{stats_router, StatsState};
+

@@ -23,9 +23,8 @@ use crate::services::listener_manager::ListenerManager;
 use crate::web::{
     auth_middleware, cache_router, dns_query_router, fallback_handler, index_handler,
     logs_router, records_router, rewrite_router, settings_router, static_handler, status_router,
-    strategy_router, upstreams_router, stats_router, AuthService, AuthState, CacheState, DnsQueryState,
+    strategy_router, upstreams_router, AuthService, AuthState, CacheState, DnsQueryState,
     LogsState, RecordsState, RewriteState, SettingsState, StatusState, StrategyState, UpstreamsState,
-    StatsState,
 };
 
 pub async fn run() -> Result<()> {
@@ -100,18 +99,6 @@ pub async fn run() -> Result<()> {
     // Initialize ListenerManager
     let listener_manager = Arc::new(ListenerManager::new(db.clone(), resolver.clone()));
 
-    // Create application state
-    let _state = Arc::new(AppState {
-        config: config.clone(),
-        db: db.clone(),
-        log_manager: log_manager.clone(),
-        resolver: resolver.clone(),
-        cache: cache.clone(),
-        proxy: proxy.clone(),
-        rewrite_engine: rewrite_engine.clone(),
-        upstream_manager: upstream_manager.clone(),
-        listener_manager: listener_manager.clone(),
-    });
 
     // Perform initial log cleanup
     match log_manager.cleanup_old_logs() {
@@ -220,12 +207,7 @@ pub async fn run() -> Result<()> {
     });
     let doh_routes = doh_server.router();
     
-    // Stats API routes
-    let stats_routes = stats_router(StatsState {
-        db: db.clone(),
-        cache: cache.clone(),
-        upstream_manager: upstream_manager.clone(),
-    });
+
     
     // LLM API routes
     let app_state = Arc::new(AppState {
@@ -260,7 +242,6 @@ pub async fn run() -> Result<()> {
         .nest("/api/listeners", listeners_routes)
         .nest("/api/settings", settings_routes)
         .nest("/api/llm", llm_routes)
-        .nest("/api/stats", stats_routes)
         .layer(middleware::from_fn_with_state(auth_state.clone(), auth_middleware));
 
 
@@ -295,9 +276,9 @@ pub async fn run() -> Result<()> {
 
     let listener = tokio::net::TcpListener::bind(web_addr).await?;
     
-    // Spawn web server
+    // Spawn web server with ConnectInfo for client IP extraction
     handles.push(tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
+        if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await {
             tracing::error!("Web server error: {}", e);
         }
     }));

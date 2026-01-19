@@ -152,7 +152,7 @@ impl DoqDnsServer {
                     let peer = peer_addr;
 
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_stream(resolver, send, recv).await {
+                        if let Err(e) = Self::handle_stream(resolver, send, recv, peer).await {
                             debug!("Error handling DoQ stream from {}: {}", peer, e);
                         }
                     });
@@ -176,6 +176,7 @@ impl DoqDnsServer {
         resolver: Arc<DnsResolver>,
         mut send: quinn::SendStream,
         mut recv: quinn::RecvStream,
+        peer_addr: SocketAddr,
     ) -> Result<()> {
         // Read query length (2 bytes, big-endian)
         let mut len_buf = [0u8; 2];
@@ -193,7 +194,8 @@ impl DoqDnsServer {
             .map_err(|e| anyhow!("Failed to read query data: {}", e))?;
 
         // Process the query
-        let response_bytes = Self::handle_query(&resolver, &query_buf).await?;
+        let client_ip = peer_addr.ip().to_string();
+        let response_bytes = Self::handle_query(&resolver, &query_buf, &client_ip).await?;
 
         // Write response length
         let response_len = (response_bytes.len() as u16).to_be_bytes();
@@ -212,7 +214,7 @@ impl DoqDnsServer {
     }
 
     /// Handle a DNS query and return the response bytes
-    async fn handle_query(resolver: &DnsResolver, data: &[u8]) -> Result<Vec<u8>> {
+    async fn handle_query(resolver: &DnsResolver, data: &[u8], client_ip: &str) -> Result<Vec<u8>> {
         // Parse the query
         let query = match DnsQuery::from_bytes(data) {
             Ok(q) => q,
@@ -229,8 +231,8 @@ impl DoqDnsServer {
             query.name, query.record_type, query.id
         );
 
-        // Resolve the query
-        let result = match resolver.resolve(&query).await {
+        // Resolve the query with client IP for logging
+        let result = match resolver.resolve_with_client(&query, client_ip).await {
             Ok(r) => r,
             Err(e) => {
                 warn!("Failed to resolve query for {}: {}", query.name, e);

@@ -5,10 +5,11 @@
 
 #![allow(dead_code)]
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Query, State},
+    extract::{Query, State, ConnectInfo},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
@@ -74,12 +75,13 @@ pub struct DohGetParams {
 async fn handle_get_query(
     State(state): State<DohState>,
     Query(params): Query<DohGetParams>,
-    request: axum::http::Request<axum::body::Body>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    request: http::Request<axum::body::Body>,
 ) -> Response {
     debug!("DoH GET request received");
 
-    // Get client IP from request
-    let client_ip = get_client_ip(&request);
+    // Get client IP from request headers or connection
+    let client_ip = get_client_ip(&request, Some(addr));
 
     // Decode base64url-encoded DNS query
     let query_bytes = match URL_SAFE_NO_PAD.decode(&params.dns) {
@@ -102,12 +104,13 @@ async fn handle_get_query(
 /// The DNS query is passed in the request body as application/dns-message.
 async fn handle_post_query(
     State(state): State<DohState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     request: axum::http::Request<axum::body::Body>,
 ) -> Response {
     debug!("DoH POST request received");
 
-    // Get client IP from request
-    let client_ip = get_client_ip(&request);
+    // Get client IP from request headers or connection
+    let client_ip = get_client_ip(&request, Some(addr));
 
     // Extract body
     let body = match axum::body::to_bytes(request.into_body(), 65536).await {
@@ -122,7 +125,7 @@ async fn handle_post_query(
 }
 
 /// Get client IP from request headers or connection
-fn get_client_ip(request: &axum::http::Request<axum::body::Body>) -> String {
+fn get_client_ip(request: &axum::http::Request<axum::body::Body>, conn_addr: Option<SocketAddr>) -> String {
     // Try X-Forwarded-For header first (for reverse proxy)
     if let Some(forwarded) = request.headers().get("x-forwarded-for") {
         if let Ok(value) = forwarded.to_str() {
@@ -137,6 +140,11 @@ fn get_client_ip(request: &axum::http::Request<axum::body::Body>) -> String {
         if let Ok(value) = real_ip.to_str() {
             return value.to_string();
         }
+    }
+    
+    // Use connection address if available
+    if let Some(addr) = conn_addr {
+        return addr.ip().to_string();
     }
     
     // Default to unknown

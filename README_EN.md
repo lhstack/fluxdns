@@ -354,7 +354,12 @@ All management APIs require JWT authentication with `/api/` prefix:
 
 ## 📝 Changelog
 
-### v1.1.4 (Latest)
+### v1.1.5 (Latest)
+- ✨ **Dashboard Redesign** - Totally redesigned homepage with clearer feature showcase
+- 🐛 **Listener Fixes** - Fixed an issue where listeners might fail to start when toggled on
+- 🐛 **Certificate Management** - Fixed issues with TLS certificate clearing and incorrect status display
+
+### v1.1.4
 - 🚀 **Performance Optimization** - Refactored SSE real-time stats with in-memory atomic caching, enabling millisecond-level response
 - ✨ **IPv6 Support** - Full IPv6 address support for upstream DNS servers
 - 🐛 **UI Fixes** - Fixed content overflow issues in query logs and upstream lists

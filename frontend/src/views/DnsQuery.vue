@@ -176,9 +176,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Search, Link, Document, List, InfoFilled } from '@element-plus/icons-vue'
+import {reactive, ref} from 'vue'
+import {ElMessage} from 'element-plus'
+import {Document, InfoFilled, Link, List, Search} from '@element-plus/icons-vue'
 import api from '../api'
 
 interface DnsRecord {
@@ -247,8 +247,7 @@ async function performQuery() {
     const response = await api.post('/api/dns/query', queryForm)
     result.value = response.data
   } catch (err: any) {
-    const message = err.response?.data?.message || '查询失败'
-    error.value = message
+    error.value = err.response?.data?.message || '查询失败'
   } finally {
     querying.value = false
   }

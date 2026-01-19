@@ -709,41 +709,6 @@ impl QueryLogRepository {
         })
     }
 
-    /// Get top queried domains
-    pub async fn get_top_domains(&self, limit: i64) -> Result<Vec<TopStats>> {
-        let result = sqlx::query_as::<_, TopStats>(
-            r#"
-            SELECT query_name as name, COUNT(*) as count
-            FROM query_logs
-            GROUP BY query_name
-            ORDER BY count DESC
-            LIMIT ?
-            "#,
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(result)
-    }
-
-    /// Get top client IPs
-    pub async fn get_top_clients(&self, limit: i64) -> Result<Vec<TopStats>> {
-        let result = sqlx::query_as::<_, TopStats>(
-            r#"
-            SELECT client_ip as name, COUNT(*) as count
-            FROM query_logs
-            GROUP BY client_ip
-            ORDER BY count DESC
-            LIMIT ?
-            "#,
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(result)
-    }
 }
 
 
@@ -753,13 +718,6 @@ pub struct QueryStats {
     pub total_queries: i64,
     pub cache_hits: i64,
     pub queries_today: i64,
-}
-
-/// Statistics for Top N items (domains, clients)
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct TopStats {
-    pub name: String,
-    pub count: i64,
 }
 
 
@@ -1092,8 +1050,16 @@ impl ServerListenerRepository {
         let enabled = update.enabled.unwrap_or(existing.enabled);
         let bind_address = update.bind_address.unwrap_or(existing.bind_address);
         let port = update.port.unwrap_or(existing.port);
-        let tls_cert = update.tls_cert.or(existing.tls_cert);
-        let tls_key = update.tls_key.or(existing.tls_key);
+        let tls_cert = match update.tls_cert {
+            Some(s) if s.is_empty() => None,
+            Some(s) => Some(s),
+            None => existing.tls_cert,
+        };
+        let tls_key = match update.tls_key {
+            Some(s) if s.is_empty() => None,
+            Some(s) => Some(s),
+            None => existing.tls_key,
+        };
 
         let result = sqlx::query_as::<_, ServerListener>(
             r#"
