@@ -30,7 +30,9 @@ ENV TZ=Asia/Shanghai \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-RUN apk add --no-cache tzdata ca-certificates && \
+# tini 作为 PID 1：回收僵尸进程并把 SIGTERM/SIGINT 转发给 fluxdns，
+# 否则容器停止时进程收不到信号，只能等超时被 SIGKILL。
+RUN apk add --no-cache tzdata ca-certificates tini && \
     cp /usr/share/zoneinfo/$TZ /etc/localtime && \
     echo $TZ > /etc/timezone
 
@@ -52,7 +54,11 @@ RUN mkdir -p /app/data /app/logs && \
 USER fluxdns
 
 # 暴露端口
-EXPOSE 8080 53/udp 53/tcp 853 443
+# 53 (UDP+TCP) 标准 DNS、853 (TCP) DoT、853 (UDP) DoQ、443 (TCP) DoH、443 (UDP) DoH3、8080 管理界面
+# 非 root 用户绑定 1024 以下端口需要 CAP_NET_BIND_SERVICE，
+# 默认配置使用 10053，绑定 53 时请在运行时补充该 capability。
+EXPOSE 8080 53/udp 53/tcp 853/tcp 853/udp 443/tcp 443/udp
 
-# 启动命令
+# tini 作为入口，保证信号转发与僵尸回收
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["/app/fluxdns"]

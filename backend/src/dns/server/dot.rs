@@ -10,8 +10,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use rustls::ServerConfig;
 use rustls::pki_types::CertificateDer;
+use rustls::ServerConfig;
 use rustls_pemfile::{certs, private_key};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -30,6 +30,15 @@ pub struct TlsConfig {
     pub key_path: String,
 }
 
+/// ALPN protocol identifier required by DoT clients (RFC 7858).
+pub const ALPN_DOT: &[u8] = b"dot";
+/// ALPN protocol identifier required by DoQ clients (RFC 9250).
+pub const ALPN_DOQ: &[u8] = b"doq";
+/// ALPN identifiers offered to DoH clients over TLS (RFC 8484 uses plain HTTP).
+pub const ALPN_HTTP: &[&[u8]] = &[b"h2", b"http/1.1"];
+/// ALPN protocol identifier required by HTTP/3 clients.
+pub const ALPN_H3: &[u8] = b"h3";
+
 impl TlsConfig {
     /// Create a new TLS configuration
     pub fn new(cert_path: impl Into<String>, key_path: impl Into<String>) -> Self {
@@ -39,15 +48,18 @@ impl TlsConfig {
         }
     }
 
-    /// Load the TLS configuration and create a ServerConfig
-    pub fn load(&self) -> Result<ServerConfig> {
+    /// Load the TLS configuration and create a ServerConfig.
+    ///
+    /// `alpn_protocols` must list the identifiers this listener speaks. Serving
+    /// an encrypted DNS transport without ALPN makes conforming clients abort
+    /// the handshake, so callers always have to state what they speak.
+    pub fn load(&self, alpn_protocols: &[&[u8]]) -> Result<ServerConfig> {
         // Load certificate chain
         let cert_file = File::open(&self.cert_path)
             .map_err(|e| anyhow!("Failed to open certificate file {}: {}", self.cert_path, e))?;
         let mut cert_reader = BufReader::new(cert_file);
-        let certs: Vec<CertificateDer<'static>> = certs(&mut cert_reader)
-            .filter_map(|r| r.ok())
-            .collect();
+        let certs: Vec<CertificateDer<'static>> =
+            certs(&mut cert_reader).filter_map(|r| r.ok()).collect();
 
         if certs.is_empty() {
             return Err(anyhow!("No certificates found in {}", self.cert_path));
@@ -63,10 +75,12 @@ impl TlsConfig {
             .ok_or_else(|| anyhow!("No private key found in {}", self.key_path))?;
 
         // Build server config
-        let config = ServerConfig::builder()
+        let mut config = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(certs, key)
             .map_err(|e| anyhow!("Failed to build TLS config: {}", e))?;
+
+        config.alpn_protocols = alpn_protocols.iter().map(|p| p.to_vec()).collect();
 
         Ok(config)
     }
@@ -86,7 +100,6 @@ pub struct DotDnsServer {
     bind_addr: SocketAddr,
 }
 
-
 impl DotDnsServer {
     /// Create a new DoT DNS server
     pub async fn new(
@@ -94,10 +107,11 @@ impl DotDnsServer {
         tls_config: TlsConfig,
         resolver: Arc<DnsResolver>,
     ) -> Result<Self> {
-        let server_config = tls_config.load()?;
+        let server_config = tls_config.load(&[ALPN_DOT])?;
         let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
-        let listener = TcpListener::bind(bind_addr).await
+        let listener = TcpListener::bind(bind_addr)
+            .await
             .map_err(|e| anyhow!("Failed to bind TCP listener to {}: {}", bind_addr, e))?;
 
         info!("DoT DNS server bound to {}", bind_addr);
@@ -122,7 +136,8 @@ impl DotDnsServer {
 
     /// Get the local address the server is actually bound to
     pub fn local_addr(&self) -> Result<SocketAddr> {
-        self.listener.local_addr()
+        self.listener
+            .local_addr()
             .map_err(|e| anyhow!("Failed to get local address: {}", e))
     }
 
@@ -139,7 +154,9 @@ impl DotDnsServer {
                     let resolver = self.resolver.clone();
 
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(acceptor, resolver, stream, peer_addr).await {
+                        if let Err(e) =
+                            Self::handle_connection(acceptor, resolver, stream, peer_addr).await
+                        {
                             warn!("Error handling DoT connection from {}: {}", peer_addr, e);
                         }
                     });
@@ -161,7 +178,9 @@ impl DotDnsServer {
         debug!("New DoT connection from {}", peer_addr);
 
         // Perform TLS handshake
-        let mut tls_stream = acceptor.accept(stream).await
+        let mut tls_stream = acceptor
+            .accept(stream)
+            .await
             .map_err(|e| anyhow!("TLS handshake failed: {}", e))?;
 
         debug!("TLS handshake completed with {}", peer_addr);
@@ -188,7 +207,9 @@ impl DotDnsServer {
 
             // Read query data
             let mut query_buf = vec![0u8; query_len];
-            tls_stream.read_exact(&mut query_buf).await
+            tls_stream
+                .read_exact(&mut query_buf)
+                .await
                 .map_err(|e| anyhow!("Failed to read query data: {}", e))?;
 
             // Process the query
@@ -197,14 +218,20 @@ impl DotDnsServer {
 
             // Write response length
             let response_len = (response_bytes.len() as u16).to_be_bytes();
-            tls_stream.write_all(&response_len).await
+            tls_stream
+                .write_all(&response_len)
+                .await
                 .map_err(|e| anyhow!("Failed to write response length: {}", e))?;
 
             // Write response data
-            tls_stream.write_all(&response_bytes).await
+            tls_stream
+                .write_all(&response_bytes)
+                .await
                 .map_err(|e| anyhow!("Failed to write response data: {}", e))?;
 
-            tls_stream.flush().await
+            tls_stream
+                .flush()
+                .await
                 .map_err(|e| anyhow!("Failed to flush response: {}", e))?;
         }
 
@@ -219,7 +246,8 @@ impl DotDnsServer {
             Err(e) => {
                 debug!("Failed to parse DNS query: {}", e);
                 let response = DnsResponse::servfail(0);
-                return response.to_bytes(&DnsQuery::new(".", crate::dns::message::RecordType::A))
+                return response
+                    .to_bytes(&DnsQuery::new(".", crate::dns::message::RecordType::A))
                     .map_err(|e| anyhow!("Failed to encode error response: {}", e));
             }
         };
@@ -235,7 +263,8 @@ impl DotDnsServer {
             Err(e) => {
                 warn!("Failed to resolve query for {}: {}", query.name, e);
                 let response = DnsResponse::servfail(query.id);
-                return response.to_bytes(&query)
+                return response
+                    .to_bytes(&query)
                     .map_err(|e| anyhow!("Failed to encode error response: {}", e));
             }
         };
@@ -250,7 +279,9 @@ impl DotDnsServer {
         );
 
         // Encode the response
-        result.response.to_bytes(&query)
+        result
+            .response
+            .to_bytes(&query)
             .map_err(|e| anyhow!("Failed to encode response: {}", e))
     }
 }

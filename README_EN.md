@@ -7,7 +7,7 @@
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange?logo=rust)](https://www.rust-lang.org/)
 [![Vue](https://img.shields.io/badge/Vue-3.x-brightgreen?logo=vuedotjs)](https://vuejs.org/)
 
-**A fully-featured DNS proxy service with multi-protocol support, AI assistant, and modern web management interface.**
+**A fully-featured DNS proxy service with multi-protocol support and a modern web management interface.**
 
 English | [中文](./README.md)
 
@@ -43,7 +43,6 @@ curl "https://fluxdns.lhstack.xyz/dns-query?dns=q80BAAABAAAAAAAAA3d3dwdleGFtcGxl
 ![Listeners](./images/6.png)
 ![Settings](./images/7.png)
 ![Cache](./images/8.png)
-![AI Assistant](./images/9.png)
 ![Real-time Monitor](./images/10.png)
 
 </details>
@@ -79,13 +78,6 @@ curl "https://fluxdns.lhstack.xyz/dns-query?dns=q80BAAABAAAAAAAAA3d3dwdleGFtcGxl
 | Local Records | Custom DNS records with wildcard support |
 | Query Logs | Detailed query logs with time range filtering and export |
 | Request Tracing | trace_id support for troubleshooting |
-
-### 🤖 AI Assistant
-
-- **DNS Diagnostics** - Intelligent DNS query problem analysis
-- **Configuration Suggestions** - Optimization recommendations based on usage
-- **Multi-LLM Support** - Compatible with OpenAI, DeepSeek APIs
-- **Context Conversations** - Maintains conversation history
 
 ### 📊 Real-time Dashboard
 
@@ -268,10 +260,6 @@ LOG_LEVEL=info
 LOG_MAX_SIZE=10485760
 LOG_RETENTION_DAYS=30
 
-# AI Assistant Configuration (optional)
-LLM_API_URL=https://api.openai.com/v1
-LLM_API_KEY=your-api-key
-LLM_MODEL=gpt-4
 ```
 
 ### Default Credentials
@@ -354,7 +342,15 @@ All management APIs require JWT authentication with `/api/` prefix:
 
 ## 📝 Changelog
 
-### v1.1.6 (Latest)
+### v1.1.7 (Latest)
+- 🏗️ **Architecture Refactoring** - Reorganized backend responsibilities and dependency direction into Application, Business, and Infrastructure layers; removed legacy directories and the built-in AI assistant
+- 🚀 **DNS Hot-Path Optimization** - Moved disabled record types and local-record availability into memory so cache hits no longer perform per-query SQLite reads
+- 💾 **Cache Optimization** - Cache entries now honor the minimum response TTL within a 5–3600 second range, with lower allocation overhead and improved approximate-LRU eviction
+- 📝 **Query Log Optimization** - Replaced unbounded per-query tasks and single-row transactions with bounded, batched SQLite writes, and exposed dropped-log counters
+- 🌐 **Upstream Stability** - Improved health probing, failure recovery, connection reuse, and query-strategy statistics while reducing per-query work at the default log level
+- 🐳 **Container Runtime** - Added tini for signal forwarding and zombie reaping, and explicitly exposed the UDP ports required by DoQ and DoH3
+
+### v1.1.6
 - 🚀 **Connection Stability** - Implemented Endpoint Pool (10 sockets) for UDP and Connection Pool (10 conns) for DoQ/DoH3, significantly improving stability under high concurrency
 - ✨ **DoQ Optimization** - Enabled QUIC Keep-Alive (5s) and idle timeout to resolve connection loss issues
 - 🐛 **DoH3 Fixes** - Fixed 500 errors caused by missing headers and implemented connection reuse

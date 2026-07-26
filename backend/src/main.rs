@@ -3,20 +3,14 @@
 //! A modern DNS proxy service supporting multiple protocols (UDP, DoT, DoH, DoQ, DoH3)
 //! with a web management interface.
 
-mod bootstrap;
-mod config;
-mod db;
+mod application;
+mod business;
 mod dns;
-mod error;
-mod llm;
-mod log;
-mod state;
-mod services;
-mod web;
+mod infrastructure;
 
 use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    bootstrap::run().await
+    application::bootstrap::run().await
 }

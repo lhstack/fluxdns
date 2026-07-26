@@ -2,11 +2,11 @@
 //!
 //! Provides caching functionality for DNS responses with TTL-based expiration,
 //! cache statistics, and cache management operations.
-//! 
+//!
 //! Optimized with DashMap for high concurrency and approximated LRU for eviction.
 
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
@@ -26,11 +26,21 @@ pub struct CacheKey {
 
 impl CacheKey {
     /// Create a new cache key
+    ///
+    /// Domain names are almost always already lowercase, so the common path
+    /// skips the `to_lowercase` allocation and copies straight into the `Arc`.
+    /// Building the key used to allocate twice on every query, including cache
+    /// lookups.
     pub fn new(name: impl AsRef<str>, record_type: RecordType) -> Self {
-        Self {
-            name: Arc::from(name.as_ref().to_lowercase().as_str()),
-            record_type,
-        }
+        let name = name.as_ref();
+
+        let name = if name.bytes().any(|b| b.is_ascii_uppercase()) {
+            Arc::from(name.to_lowercase().as_str())
+        } else {
+            Arc::from(name)
+        };
+
+        Self { name, record_type }
     }
 
     /// Create a cache key from a DNS query
@@ -83,7 +93,8 @@ impl CacheEntry {
 
     /// Update last accessed time
     pub fn touch(&self) {
-        self.last_accessed.store(Self::now_millis(), Ordering::Relaxed);
+        self.last_accessed
+            .store(Self::now_millis(), Ordering::Relaxed);
     }
 
     /// Get current time in milliseconds
@@ -95,6 +106,14 @@ impl CacheEntry {
     }
 }
 
+/// Lower bound on a cached entry's lifetime.
+///
+/// Keeps upstreams that advertise very short TTLs from turning the cache into a
+/// pass-through.
+const MIN_CACHE_TTL_SECS: u64 = 5;
+
+/// Upper bound on a cached entry's lifetime.
+const MAX_CACHE_TTL_SECS: u64 = 3600;
 
 /// Cache configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +169,8 @@ pub struct CacheManager {
     hits: AtomicU64,
     /// Cache statistics - misses
     misses: AtomicU64,
+    /// Rotating start point for bounded eviction samples.
+    eviction_cursor: AtomicUsize,
 }
 
 impl CacheManager {
@@ -165,6 +186,7 @@ impl CacheManager {
             config: RwLock::new(config),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
+            eviction_cursor: AtomicUsize::new(0),
         }
     }
 
@@ -182,87 +204,138 @@ impl CacheManager {
                 self.hits.fetch_add(1, Ordering::Relaxed);
                 // Update access time for LRU
                 entry.touch();
-                
+
                 return Some(entry.response.clone());
             }
         }
-        
+
         // Update miss count
         self.misses.fetch_add(1, Ordering::Relaxed);
-        
+
         None
     }
 
     /// Store a response in the cache
+    ///
+    /// The lifetime comes from the response itself rather than the configured
+    /// default. Using a fixed default discarded the upstream's TTL in both
+    /// directions: a record valid for an hour was re-queried every minute, and a
+    /// record valid for 30 seconds was served for a full minute after it had
+    /// expired.
     pub async fn set(&self, key: CacheKey, response: DnsResponse) {
         let config = self.config.read().await;
-        let ttl = Duration::from_secs(config.default_ttl);
+        let fallback_ttl = config.default_ttl;
         let max_entries = config.max_entries;
         drop(config);
 
+        let ttl = Self::effective_ttl(&response, fallback_ttl);
         self.set_with_ttl(key, response, ttl, max_entries).await;
     }
 
-    /// Store a response in the cache with a specific TTL
-    pub async fn set_with_ttl(&self, key: CacheKey, response: DnsResponse, ttl: Duration, max_entries: usize) {
-        // Eviction logic: if nearing capacity, perform random sampling eviction
-        // We do this check loosely to avoid contention
-        if self.cache.len() >= max_entries {
-            self.perform_eviction(max_entries);
+    /// Decide how long a response may be cached.
+    ///
+    /// The answer set's smallest TTL is authoritative, clamped so that a hostile
+    /// or misconfigured upstream can neither defeat the cache with near-zero
+    /// TTLs nor pin an entry for an unreasonable length of time. Responses
+    /// without answers fall back to the configured default, since there is no
+    /// record TTL to read.
+    fn effective_ttl(response: &DnsResponse, fallback_secs: u64) -> Duration {
+        match response.min_answer_ttl() {
+            Some(ttl) => {
+                Duration::from_secs((ttl as u64).clamp(MIN_CACHE_TTL_SECS, MAX_CACHE_TTL_SECS))
+            }
+            None => Duration::from_secs(fallback_secs),
         }
-        
-        let entry = CacheEntry::new(response, ttl);
-        self.cache.insert(key, entry);
     }
 
-    /// Perform approximated LRU eviction using random sampling
-    fn perform_eviction(&self, target_size: usize) {
-        // If we are significantly over limit, we need to remove items
-        // Sampling count: 5 random items
+    /// Store a response in the cache with a specific TTL.
+    pub async fn set_with_ttl(
+        &self,
+        key: CacheKey,
+        response: DnsResponse,
+        ttl: Duration,
+        max_entries: usize,
+    ) {
+        if max_entries == 0 {
+            return;
+        }
+
+        // `insert` returns the previous value, so replacement needs one map
+        // lookup instead of a separate `contains_key` followed by `insert`.
+        let previous = self
+            .cache
+            .insert(key.clone(), CacheEntry::new(response, ttl));
+        if previous.is_some() {
+            return;
+        }
+
+        // Concurrent insertions may briefly exceed the approximate limit. The
+        // inserting task pays bounded eviction work until this entry fits.
+        while self.cache.len() > max_entries {
+            let before = self.cache.len();
+            self.perform_eviction(max_entries, &key);
+            if self.cache.len() >= before {
+                break;
+            }
+        }
+    }
+
+    /// Evict entries until a new insertion can remain within `target_size`.
+    ///
+    /// Sampling rotates across DashMap shards and inspects only a bounded
+    /// number of entries in each chosen shard. This avoids both a whole-map
+    /// scan and the previous bias toward the iterator's first five entries.
+    fn perform_eviction(&self, target_size: usize, protected_key: &CacheKey) {
         const SAMPLE_SIZE: usize = 5;
-        
-        // We try to remove items until we are below target
-        // But to avoid blocking, we only try a few times per insert
-        let mut attempts = 0;
-        
-        while self.cache.len() >= target_size && attempts < 5 {
-            // DashMap doesn't support random sampling directly efficiently without locking shards
-            // But we can iterate and pick first N, or rely on internal implementation details.
-            // Since we upgrade to DashMap, we can't easily get "random" keys without scanning.
-            // Strategy: Quick scan of a few keys and pick oldest.
-            
-            // Note: In DashMap, iteration can be slow if map is huge. 
-            // Better approach for strict performance: skip detailed LRU if not critical, 
-            // OR just remove a few random keys if over limit.
-            
-            // Simple random eviction for now:
-            // Just satisfy the constraint by removing some entries.
-            // Ideally we'd pick the "oldest accessed" from a sample.
-            
-            // To emulate "random sample", we can't easily jump to a random index in DashMap.
-            // We will just iterate and check a small batch.
-            
-            let mut candidates: Vec<(CacheKey, i64)> = Vec::with_capacity(SAMPLE_SIZE);
-            
-            // Collect candidates
-            // We limit iteration to just finding SAMPLE_SIZE items
-            for r in self.cache.iter() {
-                candidates.push((r.key().clone(), r.value().last_accessed.load(Ordering::Relaxed)));
-                if candidates.len() >= SAMPLE_SIZE {
+        const MAX_ATTEMPTS: usize = 5;
+
+        if target_size == 0 {
+            return;
+        }
+
+        let shards = self.cache.shards();
+        for attempt in 0..MAX_ATTEMPTS {
+            if self.cache.len() <= target_size {
+                break;
+            }
+
+            let start = self.eviction_cursor.fetch_add(1, Ordering::Relaxed);
+            let mut candidate: Option<(CacheKey, i64)> = None;
+            let mut sampled = 0;
+
+            for shard_offset in 0..shards.len() {
+                let shard = &shards[(start + shard_offset + attempt) % shards.len()];
+                let guard = shard.read();
+
+                // RawTable iteration yields buckets; dereferencing a bucket is
+                // safe while its shard's read guard is held.
+                for bucket in unsafe { guard.iter() } {
+                    let (key, value) = unsafe { bucket.as_ref() };
+                    if key == protected_key {
+                        continue;
+                    }
+                    let last_accessed = value.get().last_accessed.load(Ordering::Relaxed);
+                    if candidate
+                        .as_ref()
+                        .is_none_or(|(_, oldest)| last_accessed < *oldest)
+                    {
+                        candidate = Some((key.clone(), last_accessed));
+                    }
+                    sampled += 1;
+                    if sampled == SAMPLE_SIZE {
+                        break;
+                    }
+                }
+
+                if sampled == SAMPLE_SIZE {
                     break;
                 }
             }
-            
-            if candidates.is_empty() {
+
+            let Some((oldest_key, _)) = candidate else {
                 break;
-            }
-            
-            // Find oldest among candidates
-            if let Some((oldest_key, _)) = candidates.iter().min_by_key(|(_, t)| *t) {
-                self.cache.remove(oldest_key);
-            }
-            
-            attempts += 1;
+            };
+            self.cache.remove(&oldest_key);
         }
     }
 
@@ -276,7 +349,8 @@ impl CacheManager {
     /// Clear cache entries for a specific domain
     pub async fn clear_domain(&self, domain: &str) {
         let domain_lower = domain.to_lowercase();
-        self.cache.retain(|key, _| !key.name.eq_ignore_ascii_case(&domain_lower));
+        self.cache
+            .retain(|key, _| !key.name.eq_ignore_ascii_case(&domain_lower));
     }
 
     /// Get current cache statistics
@@ -332,7 +406,6 @@ impl Default for CacheManager {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,7 +428,7 @@ mod tests {
         let response = create_test_response(12345);
 
         cache.set(key.clone(), response.clone()).await;
-        
+
         let cached = cache.get(&key).await;
         assert!(cached.is_some());
         assert_eq!(cached.unwrap().id, 12345);
@@ -365,27 +438,167 @@ mod tests {
     async fn test_cache_miss() {
         let cache = CacheManager::new();
         let key = CacheKey::new("nonexistent.com", RecordType::A);
-        
+
         let cached = cache.get(&key).await;
         assert!(cached.is_none());
     }
 
     #[tokio::test]
     async fn test_cache_expiration() {
-        let config = CacheConfig {
-            default_ttl: 0, // Immediate expiration
-            max_entries: 100,
-        };
-        let cache = CacheManager::with_config(config);
+        let cache = CacheManager::new();
         let key = CacheKey::new("example.com", RecordType::A);
-        let response = create_test_response(12345);
 
-        cache.set(key.clone(), response).await;
-        
-        // Should be expired immediately
+        // An expired entry must not be served. The lifetime is passed explicitly
+        // because `set` now derives it from the response's own record TTLs.
+        cache
+            .set_with_ttl(
+                key.clone(),
+                create_test_response(12345),
+                Duration::from_millis(1),
+                100,
+            )
+            .await;
+
         tokio::time::sleep(Duration::from_millis(10)).await;
-        let cached = cache.get(&key).await;
-        assert!(cached.is_none());
+        assert!(cache.get(&key).await.is_none());
+    }
+
+    /// The answer set's smallest TTL decides the lifetime, so a response is
+    /// never served past the point where any of its records has expired.
+    #[test]
+    fn test_effective_ttl_uses_smallest_answer_ttl() {
+        let mut response = DnsResponse::new(1);
+        response.add_answer(DnsRecordData::a(
+            "example.com",
+            "93.184.216.34".parse().unwrap(),
+            600,
+        ));
+        response.add_answer(DnsRecordData::a(
+            "example.com",
+            "93.184.216.35".parse().unwrap(),
+            120,
+        ));
+
+        assert_eq!(
+            CacheManager::effective_ttl(&response, 60),
+            Duration::from_secs(120)
+        );
+    }
+
+    /// A near-zero upstream TTL would otherwise defeat the cache entirely.
+    #[test]
+    fn test_effective_ttl_clamps_to_bounds() {
+        let mut tiny = DnsResponse::new(1);
+        tiny.add_answer(DnsRecordData::a(
+            "example.com",
+            "93.184.216.34".parse().unwrap(),
+            1,
+        ));
+        assert_eq!(
+            CacheManager::effective_ttl(&tiny, 60),
+            Duration::from_secs(MIN_CACHE_TTL_SECS)
+        );
+
+        let mut huge = DnsResponse::new(1);
+        huge.add_answer(DnsRecordData::a(
+            "example.com",
+            "93.184.216.34".parse().unwrap(),
+            86_400,
+        ));
+        assert_eq!(
+            CacheManager::effective_ttl(&huge, 60),
+            Duration::from_secs(MAX_CACHE_TTL_SECS)
+        );
+    }
+
+    /// With no answers there is no record TTL to read, so the configured
+    /// default applies.
+    #[test]
+    fn test_effective_ttl_falls_back_without_answers() {
+        let empty = DnsResponse::new(1);
+        assert_eq!(
+            CacheManager::effective_ttl(&empty, 45),
+            Duration::from_secs(45)
+        );
+    }
+
+    #[test]
+    fn test_cache_key_normalizes_ascii_case() {
+        let lower = CacheKey::new("example.com", RecordType::A);
+        let mixed = CacheKey::new("ExAmPlE.CoM", RecordType::A);
+
+        assert_eq!(lower, mixed);
+        assert_eq!(&*mixed.name, "example.com");
+    }
+
+    #[tokio::test]
+    async fn test_full_cache_replaces_existing_key_without_evicting_another() {
+        let cache = CacheManager::new();
+        let first = CacheKey::new("first.example", RecordType::A);
+        let second = CacheKey::new("second.example", RecordType::A);
+
+        cache
+            .set_with_ttl(
+                first.clone(),
+                create_test_response(1),
+                Duration::from_secs(60),
+                2,
+            )
+            .await;
+        cache
+            .set_with_ttl(
+                second.clone(),
+                create_test_response(2),
+                Duration::from_secs(60),
+                2,
+            )
+            .await;
+        cache
+            .set_with_ttl(
+                first.clone(),
+                create_test_response(3),
+                Duration::from_secs(60),
+                2,
+            )
+            .await;
+
+        assert_eq!(cache.stats().await.entries, 2);
+        assert_eq!(cache.get(&first).await.unwrap().id, 3);
+        assert!(cache.get(&second).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_inserting_past_capacity_evicts_one_entry() {
+        let cache = CacheManager::new();
+        let first = CacheKey::new("first.example", RecordType::A);
+        let second = CacheKey::new("second.example", RecordType::A);
+        let third = CacheKey::new("third.example", RecordType::A);
+
+        for (key, id) in [(first, 1), (second, 2), (third.clone(), 3)] {
+            cache
+                .set_with_ttl(key, create_test_response(id), Duration::from_secs(60), 2)
+                .await;
+        }
+
+        assert_eq!(cache.stats().await.entries, 2);
+        assert!(cache.get(&third).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_zero_capacity_does_not_store_entries() {
+        let cache = CacheManager::new();
+        let key = CacheKey::new("example.com", RecordType::A);
+
+        cache
+            .set_with_ttl(
+                key.clone(),
+                create_test_response(1),
+                Duration::from_secs(60),
+                0,
+            )
+            .await;
+
+        assert!(cache.get(&key).await.is_none());
     }
 
     #[tokio::test]
@@ -411,10 +624,10 @@ mod tests {
 
         // Miss
         cache.get(&key).await;
-        
+
         // Set
         cache.set(key.clone(), response).await;
-        
+
         // Hit
         cache.get(&key).await;
         cache.get(&key).await;

@@ -5,20 +5,16 @@
 
 #![allow(dead_code)]
 
-use std::fs::File;
-use std::io::BufReader;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use quinn::{Endpoint, ServerConfig};
-use rustls::pki_types::CertificateDer;
-use rustls_pemfile::{certs, private_key};
 use tracing::{debug, info, warn};
 
+use super::dot::{TlsConfig, ALPN_DOQ};
 use crate::dns::message::{DnsQuery, DnsResponse};
 use crate::dns::resolver::DnsResolver;
-use super::dot::TlsConfig;
 
 /// DNS over QUIC Server
 ///
@@ -40,7 +36,7 @@ impl DoqDnsServer {
         resolver: Arc<DnsResolver>,
     ) -> Result<Self> {
         let server_config = Self::create_server_config(&tls_config)?;
-        
+
         let endpoint = Endpoint::server(server_config, bind_addr)
             .map_err(|e| anyhow!("Failed to create QUIC endpoint: {}", e))?;
 
@@ -54,38 +50,15 @@ impl DoqDnsServer {
     }
 
     /// Create QUIC server configuration from TLS config
+    ///
+    /// RFC 9250 requires the `doq` ALPN identifier; without it conforming
+    /// clients abort the handshake, which made this listener unreachable.
     fn create_server_config(tls_config: &TlsConfig) -> Result<ServerConfig> {
-        // Load certificate chain
-        let cert_file = File::open(&tls_config.cert_path)
-            .map_err(|e| anyhow!("Failed to open certificate file: {}", e))?;
-        let mut cert_reader = BufReader::new(cert_file);
-        let certs: Vec<CertificateDer<'static>> = certs(&mut cert_reader)
-            .filter_map(|r| r.ok())
-            .collect();
+        let crypto = tls_config.load(&[ALPN_DOQ])?;
 
-        if certs.is_empty() {
-            return Err(anyhow!("No certificates found"));
-        }
-
-        // Load private key
-        let key_file = File::open(&tls_config.key_path)
-            .map_err(|e| anyhow!("Failed to open key file: {}", e))?;
-        let mut key_reader = BufReader::new(key_file);
-
-        let key = private_key(&mut key_reader)
-            .map_err(|e| anyhow!("Failed to parse private key: {}", e))?
-            .ok_or_else(|| anyhow!("No private key found"))?;
-
-        // Build rustls config
-        let crypto = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)
-            .map_err(|e| anyhow!("Failed to build TLS config: {}", e))?;
-
-        // Build QUIC server config using quinn's crypto wrapper
         let server_config = ServerConfig::with_crypto(Arc::new(
             quinn::crypto::rustls::QuicServerConfig::try_from(crypto)
-                .map_err(|e| anyhow!("Failed to create QUIC server config: {}", e))?
+                .map_err(|e| anyhow!("Failed to create QUIC server config: {}", e))?,
         ));
 
         Ok(server_config)
@@ -103,10 +76,10 @@ impl DoqDnsServer {
 
     /// Get the local address the server is actually bound to
     pub fn local_addr(&self) -> Result<SocketAddr> {
-        self.endpoint.local_addr()
+        self.endpoint
+            .local_addr()
             .map_err(|e| anyhow!("Failed to get local address: {}", e))
     }
-
 
     /// Run the DoQ DNS server
     ///
@@ -180,7 +153,8 @@ impl DoqDnsServer {
     ) -> Result<()> {
         // Read query length (2 bytes, big-endian)
         let mut len_buf = [0u8; 2];
-        recv.read_exact(&mut len_buf).await
+        recv.read_exact(&mut len_buf)
+            .await
             .map_err(|e| anyhow!("Failed to read query length: {}", e))?;
 
         let query_len = u16::from_be_bytes(len_buf) as usize;
@@ -190,7 +164,8 @@ impl DoqDnsServer {
 
         // Read query data
         let mut query_buf = vec![0u8; query_len];
-        recv.read_exact(&mut query_buf).await
+        recv.read_exact(&mut query_buf)
+            .await
             .map_err(|e| anyhow!("Failed to read query data: {}", e))?;
 
         // Process the query
@@ -199,11 +174,13 @@ impl DoqDnsServer {
 
         // Write response length
         let response_len = (response_bytes.len() as u16).to_be_bytes();
-        send.write_all(&response_len).await
+        send.write_all(&response_len)
+            .await
             .map_err(|e| anyhow!("Failed to write response length: {}", e))?;
 
         // Write response data
-        send.write_all(&response_bytes).await
+        send.write_all(&response_bytes)
+            .await
             .map_err(|e| anyhow!("Failed to write response data: {}", e))?;
 
         // Finish the stream (no longer async in quinn 0.11)
@@ -221,7 +198,8 @@ impl DoqDnsServer {
             Err(e) => {
                 debug!("Failed to parse DNS query: {}", e);
                 let response = DnsResponse::servfail(0);
-                return response.to_bytes(&DnsQuery::new(".", crate::dns::message::RecordType::A))
+                return response
+                    .to_bytes(&DnsQuery::new(".", crate::dns::message::RecordType::A))
                     .map_err(|e| anyhow!("Failed to encode error response: {}", e));
             }
         };
@@ -237,7 +215,8 @@ impl DoqDnsServer {
             Err(e) => {
                 warn!("Failed to resolve query for {}: {}", query.name, e);
                 let response = DnsResponse::servfail(query.id);
-                return response.to_bytes(&query)
+                return response
+                    .to_bytes(&query)
                     .map_err(|e| anyhow!("Failed to encode error response: {}", e));
             }
         };
@@ -252,7 +231,9 @@ impl DoqDnsServer {
         );
 
         // Encode the response
-        result.response.to_bytes(&query)
+        result
+            .response
+            .to_bytes(&query)
             .map_err(|e| anyhow!("Failed to encode response: {}", e))
     }
 }
@@ -266,7 +247,7 @@ mod tests {
         // Note: Full DoQ server tests require valid TLS certificates
         // which are not available in unit tests. Integration tests
         // should be used for full server testing.
-        
+
         let tls_config = TlsConfig::new("/path/to/cert.pem", "/path/to/key.pem");
         assert_eq!(tls_config.cert_path, "/path/to/cert.pem");
         assert_eq!(tls_config.key_path, "/path/to/key.pem");

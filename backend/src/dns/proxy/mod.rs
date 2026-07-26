@@ -6,14 +6,14 @@
 //! - Query strategies (concurrent, fastest, round-robin, random)
 //! - Failover handling
 
-mod upstream;
 mod client;
 mod strategy;
+mod upstream;
 
 #[cfg(test)]
 mod forwarding_tests;
 
-pub use upstream::*;
 #[allow(unused_imports)]
 pub use client::*;
 pub use strategy::*;
+pub use upstream::*;

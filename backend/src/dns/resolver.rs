@@ -10,11 +10,43 @@ use std::time::Instant;
 use anyhow::Result;
 use tracing::debug;
 
-use crate::db::{Database, CreateQueryLog};
 use super::cache::{CacheKey, CacheManager};
 use super::message::{DnsQuery, DnsRecordData, DnsResponse, DnsResponseCode, RecordType};
+use super::plane_state::DataPlaneState;
 use super::proxy::ProxyManager;
 use super::rewrite::{RewriteAction, RewriteEngine};
+use crate::infrastructure::repository::{CreateQueryLog, Database, QueryLogWriter};
+
+/// Formats answer values only when the log record is actually emitted.
+///
+/// Building a `Vec<String>` of cloned answer values up front cost an allocation
+/// per answer on every query, including when the `debug` level was disabled and
+/// the message was discarded.
+struct JoinedAnswers<'a>(&'a DnsResponse);
+
+impl std::fmt::Display for JoinedAnswers<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (index, answer) in self.0.answers.iter().enumerate() {
+            if index > 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str(&answer.value)?;
+        }
+        Ok(())
+    }
+}
+
+/// Formats the answer values, or the response code when there are none.
+struct AnswersOrCode<'a>(&'a DnsResponse);
+
+impl std::fmt::Display for AnswersOrCode<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.answers.is_empty() {
+            return write!(f, "{}", self.0.response_code);
+        }
+        write!(f, "{}", JoinedAnswers(self.0))
+    }
+}
 
 /// Query metadata returned alongside the DNS response
 #[derive(Debug, Clone)]
@@ -65,8 +97,11 @@ pub struct DnsResolver {
     proxy: Arc<ProxyManager>,
     /// Database for query logging (optional)
     db: Option<Arc<Database>>,
+    /// Batching writer for query logs (present whenever `db` is)
+    log_writer: Option<Arc<QueryLogWriter>>,
+    /// Query-path state that avoids per-query database round trips
+    plane_state: Arc<DataPlaneState>,
 }
-
 
 #[allow(dead_code)]
 impl DnsResolver {
@@ -81,6 +116,8 @@ impl DnsResolver {
             cache,
             proxy,
             db: None,
+            plane_state: Arc::new(DataPlaneState::new()),
+            log_writer: None,
         }
     }
 
@@ -90,12 +127,15 @@ impl DnsResolver {
         cache: Arc<CacheManager>,
         proxy: Arc<ProxyManager>,
         db: Arc<Database>,
+        log_writer: Arc<QueryLogWriter>,
     ) -> Self {
         Self {
             rewrite_engine,
             cache,
             proxy,
             db: Some(db),
+            plane_state: Arc::new(DataPlaneState::new()),
+            log_writer: Some(log_writer),
         }
     }
 
@@ -123,6 +163,11 @@ impl DnsResolver {
         &self.proxy
     }
 
+    /// Get the query-path state, so owners of a mutation can refresh it.
+    pub fn plane_state(&self) -> &Arc<DataPlaneState> {
+        &self.plane_state
+    }
+
     /// Resolve a DNS query
     ///
     /// This is the main entry point for DNS resolution. It follows this flow:
@@ -142,7 +187,9 @@ impl DnsResolver {
         if !Self::is_valid_domain(&query.name) {
             debug!(
                 "[DNS Result] {} {} | Invalid domain (rejected) | {}ms",
-                query.name, query.record_type, start.elapsed().as_millis()
+                query.name,
+                query.record_type,
+                start.elapsed().as_millis()
             );
             metadata.response_time_ms = start.elapsed().as_millis() as u64;
             return Ok(ResolveResult {
@@ -151,14 +198,19 @@ impl DnsResolver {
             });
         }
 
-        debug!("[DNS Query] {} {} (ID: {})", query.name, query.record_type, query.id);
+        debug!(
+            "[DNS Query] {} {} (ID: {})",
+            query.name, query.record_type, query.id
+        );
 
         // Step 1: Check if record type is disabled
-        if let Some(ref db) = self.db {
-            if self.is_record_type_disabled(db, &query.record_type.to_string()).await {
+        {
+            if self.plane_state.is_type_disabled(query.record_type) {
                 debug!(
                     "[DNS Result] {} {} | Disabled record type | {}ms",
-                    query.name, query.record_type, start.elapsed().as_millis()
+                    query.name,
+                    query.record_type,
+                    start.elapsed().as_millis()
                 );
                 metadata.response_time_ms = start.elapsed().as_millis() as u64;
                 return Ok(ResolveResult {
@@ -173,7 +225,9 @@ impl DnsResolver {
             metadata.rewrite_applied = true;
             metadata.rewrite_rule_id = Some(rewrite_result.rule_id);
 
-            let response = self.apply_rewrite_action(query, &rewrite_result.action).await?;
+            let response = self
+                .apply_rewrite_action(query, &rewrite_result.action)
+                .await?;
             metadata.response_time_ms = start.elapsed().as_millis() as u64;
 
             let action_desc = match &rewrite_result.action {
@@ -183,22 +237,34 @@ impl DnsResolver {
             };
             debug!(
                 "[DNS Result] {} {} | Rewrite(rule_id={}) {} | {}ms",
-                query.name, query.record_type, rewrite_result.rule_id, action_desc, metadata.response_time_ms
+                query.name,
+                query.record_type,
+                rewrite_result.rule_id,
+                action_desc,
+                metadata.response_time_ms
             );
 
             return Ok(ResolveResult { response, metadata });
         }
 
-        // Step 2: Check local DNS records from database
+        // Step 2: Check local DNS records from database.
+        //
+        // The mask check keeps this off the hot path: with no local records of
+        // this type the query cannot match one, so the lookup is skipped rather
+        // than issuing a SELECT ahead of the cache.
         if let Some(ref db) = self.db {
-            if let Some(response) = self.check_local_records(db, query).await? {
-                metadata.response_time_ms = start.elapsed().as_millis() as u64;
-                let answers: Vec<String> = response.answers.iter().map(|a| a.value.clone()).collect();
-                debug!(
-                    "[DNS Result] {} {} | LocalRecord | {} | {}ms",
-                    query.name, query.record_type, answers.join(", "), metadata.response_time_ms
-                );
-                return Ok(ResolveResult { response, metadata });
+            if self.plane_state.may_have_local_record(query.record_type) {
+                if let Some(response) = self.check_local_records(db, query).await? {
+                    metadata.response_time_ms = start.elapsed().as_millis() as u64;
+                    debug!(
+                        "[DNS Result] {} {} | LocalRecord | {} | {}ms",
+                        query.name,
+                        query.record_type,
+                        JoinedAnswers(&response),
+                        metadata.response_time_ms
+                    );
+                    return Ok(ResolveResult { response, metadata });
+                }
             }
         }
 
@@ -212,10 +278,12 @@ impl DnsResolver {
             let mut response = cached_response;
             response.id = query.id;
 
-            let answers: Vec<String> = response.answers.iter().map(|a| a.value.clone()).collect();
             debug!(
                 "[DNS Result] {} {} | Cache | {} | {}ms",
-                query.name, query.record_type, answers.join(", "), metadata.response_time_ms
+                query.name,
+                query.record_type,
+                JoinedAnswers(&response),
+                metadata.response_time_ms
             );
 
             return Ok(ResolveResult { response, metadata });
@@ -225,7 +293,7 @@ impl DnsResolver {
 
         // Step 4: Query upstream via proxy
         let query_result = self.proxy.query(query).await?;
-        
+
         metadata.upstream_used = Some(query_result.server_name.clone());
         metadata.response_time_ms = start.elapsed().as_millis() as u64;
 
@@ -238,25 +306,20 @@ impl DnsResolver {
             self.cache.set(cache_key, response.clone()).await;
         }
 
-        let answers: Vec<String> = response.answers.iter().map(|a| a.value.clone()).collect();
-        let result_str = if answers.is_empty() {
-            format!("{}", response.response_code)
-        } else {
-            answers.join(", ")
-        };
         debug!(
             "[DNS Result] {} {} | Upstream({}) | {} | {}ms",
-            query.name, query.record_type, query_result.server_name, result_str, metadata.response_time_ms
+            query.name,
+            query.record_type,
+            query_result.server_name,
+            AnswersOrCode(&response),
+            metadata.response_time_ms
         );
 
-        Ok(ResolveResult {
-            response,
-            metadata,
-        })
+        Ok(ResolveResult { response, metadata })
     }
 
     /// Check if domain name is valid according to DNS standards
-    /// 
+    ///
     /// Valid domain names must:
     /// - Only contain ASCII letters (a-z, A-Z), digits (0-9), hyphens (-), dots (.), and underscores (_)
     /// - Not contain protocol prefixes (://)
@@ -268,17 +331,17 @@ impl DnsResolver {
         if name.is_empty() || name.len() > 253 {
             return false;
         }
-        
+
         // Check for protocol prefixes (http://, https://, etc.)
         if name.contains("://") {
             return false;
         }
-        
+
         // Check for escaped slashes (common in malformed queries)
         if name.contains("\\/") || name.contains("\\\\") {
             return false;
         }
-        
+
         // Check for other invalid characters
         // Valid DNS characters: a-z, A-Z, 0-9, hyphen (-), dot (.), underscore (_)
         // Note: Underscore is technically not standard but widely used (e.g., _dmarc, _spf)
@@ -293,7 +356,7 @@ impl DnsResolver {
                 }
             }
         }
-        
+
         // Check each label (part between dots)
         for label in name.split('.') {
             // Empty labels are invalid (consecutive dots or leading/trailing dot)
@@ -305,43 +368,34 @@ impl DnsResolver {
                 }
                 return false;
             }
-            
+
             // Label length must be 1-63 characters
             if label.len() > 63 {
                 return false;
             }
-            
+
             // Labels cannot start or end with hyphen
             if label.starts_with('-') || label.ends_with('-') {
                 return false;
             }
         }
-        
-        true
-    }
 
-    /// Check if a record type is disabled in settings
-    async fn is_record_type_disabled(&self, db: &Database, record_type: &str) -> bool {
-        match db.system_config().get("disabled_record_types").await {
-            Ok(Some(value)) => {
-                if let Ok(disabled_types) = serde_json::from_str::<Vec<String>>(&value) {
-                    let upper = record_type.to_uppercase();
-                    return disabled_types.iter().any(|t| t.to_uppercase() == upper);
-                }
-                false
-            }
-            _ => false,
-        }
+        true
     }
 
     /// Resolve a DNS query with client IP for logging
     ///
     /// This method wraps resolve() and saves the query log to database.
-    pub async fn resolve_with_client(&self, query: &DnsQuery, client_ip: &str) -> Result<ResolveResult> {
+    pub async fn resolve_with_client(
+        &self,
+        query: &DnsQuery,
+        client_ip: &str,
+    ) -> Result<ResolveResult> {
         let result = self.resolve(query).await;
-        
-        // Save query log to database (fire and forget)
-        if let Some(ref db) = self.db {
+
+        // Hand the log entry to the batching writer. Enqueueing never blocks and
+        // never fails, so resolution is not affected by logging throughput.
+        if let Some(ref writer) = self.log_writer {
             let log = match &result {
                 Ok(r) => CreateQueryLog {
                     client_ip: client_ip.to_string(),
@@ -362,25 +416,27 @@ impl DnsResolver {
                     upstream_used: None,
                 },
             };
-            
-            let db = db.clone();
-            tokio::spawn(async move {
-                if let Err(e) = db.query_logs().create(log).await {
-                    tracing::warn!("Failed to save query log: {}", e);
-                }
-            });
+
+            writer.enqueue(log);
         }
-        
+
         result
     }
 
     /// Check local DNS records from database
-    async fn check_local_records(&self, db: &Database, query: &DnsQuery) -> Result<Option<DnsResponse>> {
+    async fn check_local_records(
+        &self,
+        db: &Database,
+        query: &DnsQuery,
+    ) -> Result<Option<DnsResponse>> {
         use std::net::{Ipv4Addr, Ipv6Addr};
         use std::str::FromStr;
 
         let record_type_str = query.record_type.to_string();
-        let records = db.dns_records().get_by_name_and_type_with_wildcard(&query.name, &record_type_str).await?;
+        let records = db
+            .dns_records()
+            .get_by_name_and_type_with_wildcard(&query.name, &record_type_str)
+            .await?;
         if records.is_empty() {
             return Ok(None);
         }
@@ -416,21 +472,32 @@ impl DnsResolver {
                         None
                     }
                 }
-                RecordType::CNAME => {
-                    Some(DnsRecordData::cname(response_name, &record.value, record.ttl as u32))
-                }
-                RecordType::MX => {
-                    Some(DnsRecordData::mx(response_name, &record.value, record.priority as u16, record.ttl as u32))
-                }
-                RecordType::TXT => {
-                    Some(DnsRecordData::txt(response_name, &record.value, record.ttl as u32))
-                }
-                RecordType::PTR => {
-                    Some(DnsRecordData::ptr(response_name, &record.value, record.ttl as u32))
-                }
-                RecordType::NS => {
-                    Some(DnsRecordData::ns(response_name, &record.value, record.ttl as u32))
-                }
+                RecordType::CNAME => Some(DnsRecordData::cname(
+                    response_name,
+                    &record.value,
+                    record.ttl as u32,
+                )),
+                RecordType::MX => Some(DnsRecordData::mx(
+                    response_name,
+                    &record.value,
+                    record.priority as u16,
+                    record.ttl as u32,
+                )),
+                RecordType::TXT => Some(DnsRecordData::txt(
+                    response_name,
+                    &record.value,
+                    record.ttl as u32,
+                )),
+                RecordType::PTR => Some(DnsRecordData::ptr(
+                    response_name,
+                    &record.value,
+                    record.ttl as u32,
+                )),
+                RecordType::NS => Some(DnsRecordData::ns(
+                    response_name,
+                    &record.value,
+                    record.ttl as u32,
+                )),
                 _ => None,
             };
 
@@ -463,29 +530,25 @@ impl DnsResolver {
         action: &RewriteAction,
     ) -> Result<DnsResponse> {
         match action {
-            RewriteAction::MapToIp(ip) => {
-                self.create_ip_response(query, *ip)
-            }
+            RewriteAction::MapToIp(ip) => self.create_ip_response(query, *ip),
             RewriteAction::MapToDomain(target_domain) => {
                 // Resolve the target domain
                 let target_query = DnsQuery::new(target_domain, query.record_type);
                 let result = self.resolve_without_rewrite(&target_query).await?;
-                
+
                 // Return response with original query ID
                 let mut response = result.response;
                 response.id = query.id;
                 Ok(response)
             }
-            RewriteAction::Block => {
-                Ok(DnsResponse::nxdomain(query.id))
-            }
+            RewriteAction::Block => Ok(DnsResponse::nxdomain(query.id)),
         }
     }
 
     /// Create a response with an IP address
     fn create_ip_response(&self, query: &DnsQuery, ip: IpAddr) -> Result<DnsResponse> {
         let mut response = DnsResponse::new(query.id);
-        
+
         match (ip, query.record_type) {
             (IpAddr::V4(ipv4), RecordType::A) => {
                 response.add_answer(DnsRecordData::a(&query.name, ipv4, 300));
@@ -495,17 +558,11 @@ impl DnsResolver {
             }
             (IpAddr::V4(ipv4), RecordType::AAAA) => {
                 // Requested AAAA but have IPv4 - return empty response
-                debug!(
-                    "Rewrite has IPv4 {} but query is for AAAA record",
-                    ipv4
-                );
+                debug!("Rewrite has IPv4 {} but query is for AAAA record", ipv4);
             }
             (IpAddr::V6(ipv6), RecordType::A) => {
                 // Requested A but have IPv6 - return empty response
-                debug!(
-                    "Rewrite has IPv6 {} but query is for A record",
-                    ipv6
-                );
+                debug!("Rewrite has IPv6 {} but query is for A record", ipv6);
             }
             _ => {
                 // For other record types with IP rewrite, return empty response
@@ -532,13 +589,19 @@ impl DnsResolver {
         &'a self,
         query: &'a DnsQuery,
         depth: u32,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ResolveResult>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ResolveResult>> + Send + 'a>>
+    {
         Box::pin(async move {
             const MAX_DEPTH: u32 = 10;
-            
+
             if depth > MAX_DEPTH {
-                debug!("Max rewrite depth {} exceeded for {}", MAX_DEPTH, query.name);
-                return Err(anyhow::anyhow!("Max rewrite depth exceeded, possible circular reference"));
+                debug!(
+                    "Max rewrite depth {} exceeded for {}",
+                    MAX_DEPTH, query.name
+                );
+                return Err(anyhow::anyhow!(
+                    "Max rewrite depth exceeded, possible circular reference"
+                ));
             }
 
             let start = Instant::now();
@@ -558,7 +621,9 @@ impl DnsResolver {
                 metadata.rewrite_applied = true;
                 metadata.rewrite_rule_id = Some(rewrite_result.rule_id);
 
-                let response = self.apply_rewrite_action_with_depth(query, &rewrite_result.action, depth).await?;
+                let response = self
+                    .apply_rewrite_action_with_depth(query, &rewrite_result.action, depth)
+                    .await?;
                 metadata.response_time_ms = start.elapsed().as_millis() as u64;
 
                 return Ok(ResolveResult { response, metadata });
@@ -566,10 +631,15 @@ impl DnsResolver {
 
             // Step 2: Check local DNS records from database
             if let Some(ref db) = self.db {
-                if let Some(response) = self.check_local_records(db, query).await? {
-                    debug!("Local DNS record found for {} {} (depth {})", query.name, query.record_type, depth);
-                    metadata.response_time_ms = start.elapsed().as_millis() as u64;
-                    return Ok(ResolveResult { response, metadata });
+                if self.plane_state.may_have_local_record(query.record_type) {
+                    if let Some(response) = self.check_local_records(db, query).await? {
+                        debug!(
+                            "Local DNS record found for {} {} (depth {})",
+                            query.name, query.record_type, depth
+                        );
+                        metadata.response_time_ms = start.elapsed().as_millis() as u64;
+                        return Ok(ResolveResult { response, metadata });
+                    }
                 }
             }
 
@@ -587,7 +657,7 @@ impl DnsResolver {
 
             // Step 4: Query upstream
             let query_result = self.proxy.query(query).await?;
-            
+
             metadata.upstream_used = Some(query_result.server_name);
             metadata.response_time_ms = start.elapsed().as_millis() as u64;
 
@@ -600,10 +670,7 @@ impl DnsResolver {
                 self.cache.set(cache_key, response.clone()).await;
             }
 
-            Ok(ResolveResult {
-                response,
-                metadata,
-            })
+            Ok(ResolveResult { response, metadata })
         })
     }
 
@@ -616,33 +683,28 @@ impl DnsResolver {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<DnsResponse>> + Send + 'a>> {
         Box::pin(async move {
             match action {
-                RewriteAction::MapToIp(ip) => {
-                    self.create_ip_response(query, *ip)
-                }
+                RewriteAction::MapToIp(ip) => self.create_ip_response(query, *ip),
                 RewriteAction::MapToDomain(target_domain) => {
                     // Resolve the target domain with increased depth
                     let target_query = DnsQuery::new(target_domain, query.record_type);
                     let result = self.resolve_with_depth(&target_query, depth + 1).await?;
-                    
+
                     // Return response with original query ID
                     let mut response = result.response;
                     response.id = query.id;
                     Ok(response)
                 }
-                RewriteAction::Block => {
-                    Ok(DnsResponse::nxdomain(query.id))
-                }
+                RewriteAction::Block => Ok(DnsResponse::nxdomain(query.id)),
             }
         })
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dns::cache::CacheConfig;
-    use crate::dns::proxy::{UpstreamManager, UpstreamProtocol, UpstreamServer};
+    use crate::dns::proxy::UpstreamManager;
     use crate::dns::rewrite::{MatchType, RewriteRule};
     use std::net::Ipv4Addr;
 
@@ -669,13 +731,16 @@ mod tests {
         let resolver = create_test_resolver();
 
         // Add a block rule
-        resolver.rewrite_engine.add_rule(RewriteRule::new(
-            1,
-            "blocked.com".to_string(),
-            MatchType::Exact,
-            RewriteAction::Block,
-            10,
-        )).await;
+        resolver
+            .rewrite_engine
+            .add_rule(RewriteRule::new(
+                1,
+                "blocked.com".to_string(),
+                MatchType::Exact,
+                RewriteAction::Block,
+                10,
+            ))
+            .await;
 
         let query = DnsQuery::new("blocked.com", RecordType::A);
         let result = resolver.resolve(&query).await.unwrap();
@@ -691,13 +756,16 @@ mod tests {
 
         // Add a map-to-ip rule
         let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        resolver.rewrite_engine.add_rule(RewriteRule::new(
-            1,
-            "local.test".to_string(),
-            MatchType::Exact,
-            RewriteAction::MapToIp(ip),
-            10,
-        )).await;
+        resolver
+            .rewrite_engine
+            .add_rule(RewriteRule::new(
+                1,
+                "local.test".to_string(),
+                MatchType::Exact,
+                RewriteAction::MapToIp(ip),
+                10,
+            ))
+            .await;
 
         let query = DnsQuery::new("local.test", RecordType::A);
         let result = resolver.resolve(&query).await.unwrap();
@@ -773,7 +841,7 @@ mod tests {
     #[tokio::test]
     async fn test_query_metadata_default() {
         let metadata = QueryMetadata::default();
-        
+
         assert_eq!(metadata.response_time_ms, 0);
         assert!(!metadata.cache_hit);
         assert!(metadata.upstream_used.is_none());
@@ -791,14 +859,14 @@ mod tests {
         assert!(DnsResolver::is_valid_domain("example123.com"));
         assert!(DnsResolver::is_valid_domain("123.com"));
         assert!(DnsResolver::is_valid_domain("my-domain.com"));
-        
+
         // Punycode (IDN) domains - these are valid
         assert!(DnsResolver::is_valid_domain("xn--4gq62f52gdss.com")); // 一元机场.com
         assert!(DnsResolver::is_valid_domain("xn--n3h.com")); // emoji domain
-        
+
         // FQDN with trailing dot
         assert!(DnsResolver::is_valid_domain("example.com."));
-        
+
         // Underscore (used in DNS records like _dmarc, _spf)
         assert!(DnsResolver::is_valid_domain("_dmarc.example.com"));
         assert!(DnsResolver::is_valid_domain("_spf.example.com"));
@@ -810,12 +878,12 @@ mod tests {
         assert!(!DnsResolver::is_valid_domain("http://example.com"));
         assert!(!DnsResolver::is_valid_domain("https://example.com"));
         assert!(!DnsResolver::is_valid_domain("ftp://example.com"));
-        
+
         // Chinese characters (should use Punycode)
         assert!(!DnsResolver::is_valid_domain("一元机场.com"));
         assert!(!DnsResolver::is_valid_domain("中文.com"));
         assert!(!DnsResolver::is_valid_domain("测试.example.com"));
-        
+
         // Special characters
         assert!(!DnsResolver::is_valid_domain("example.com/path"));
         assert!(!DnsResolver::is_valid_domain("example.com?query"));
@@ -824,25 +892,25 @@ mod tests {
         assert!(!DnsResolver::is_valid_domain("user@example.com"));
         assert!(!DnsResolver::is_valid_domain("example .com"));
         assert!(!DnsResolver::is_valid_domain("example\t.com"));
-        
+
         // Escaped characters
         assert!(!DnsResolver::is_valid_domain("example\\.com"));
         assert!(!DnsResolver::is_valid_domain("example\\\\com"));
-        
+
         // Empty or too long
         assert!(!DnsResolver::is_valid_domain(""));
         assert!(!DnsResolver::is_valid_domain(&"a".repeat(254)));
-        
+
         // Label too long (>63 chars)
         let long_label = format!("{}.com", "a".repeat(64));
         assert!(!DnsResolver::is_valid_domain(&long_label));
-        
+
         // Invalid label format
         assert!(!DnsResolver::is_valid_domain("-example.com")); // starts with hyphen
         assert!(!DnsResolver::is_valid_domain("example-.com")); // ends with hyphen
         assert!(!DnsResolver::is_valid_domain("..example.com")); // consecutive dots
         assert!(!DnsResolver::is_valid_domain(".example.com")); // leading dot
-        
+
         // Emojis
         assert!(!DnsResolver::is_valid_domain("😀.com"));
         assert!(!DnsResolver::is_valid_domain("example😀.com"));

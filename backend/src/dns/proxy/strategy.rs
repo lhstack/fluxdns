@@ -6,23 +6,19 @@
 //! - RoundRobin: Rotate through servers sequentially
 //! - Random: Select a random server for each query
 
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{anyhow, Result};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use uuid::Uuid;
 
-use crate::dns::message::DnsQuery;
 use super::client::{create_client, DnsClient, QueryResult};
 use super::upstream::{UpstreamManager, UpstreamServer};
+use crate::dns::message::DnsQuery;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
-
-/// Global counter for query failures
-static TOTAL_FAILURE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Query strategy types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,7 +69,6 @@ impl std::fmt::Display for QueryStrategy {
     }
 }
 
-
 /// DNS Proxy Manager
 ///
 /// Manages upstream DNS servers and query strategies.
@@ -84,6 +79,8 @@ pub struct ProxyManager {
     strategy: RwLock<QueryStrategy>,
     /// Round-robin counter
     round_robin_counter: AtomicUsize,
+    /// Allocation-free process-local identifier for query diagnostics.
+    query_counter: AtomicU64,
     /// Upstream client cache (keyed by UpstreamServer)
     client_cache: Mutex<HashMap<UpstreamServer, Arc<dyn DnsClient>>>,
 }
@@ -96,6 +93,7 @@ impl ProxyManager {
             upstream_manager,
             strategy: RwLock::new(QueryStrategy::default()),
             round_robin_counter: AtomicUsize::new(0),
+            query_counter: AtomicU64::new(1),
             client_cache: Mutex::new(HashMap::new()),
         }
     }
@@ -122,62 +120,80 @@ impl ProxyManager {
     }
 
     /// Get or create a client for the given server
-    async fn get_client(&self, server: &UpstreamServer) -> Arc<dyn DnsClient> {
+    async fn get_client(&self, server: &UpstreamServer) -> Result<Arc<dyn DnsClient>> {
         let mut cache = self.client_cache.lock().await;
-        
+
         if let Some(client) = cache.get(server) {
-            return client.clone();
+            return Ok(client.clone());
         }
 
-        let client: Arc<dyn DnsClient> = Arc::from(create_client(server.clone()));
+        let client: Arc<dyn DnsClient> = Arc::from(create_client(server.clone())?);
         cache.insert(server.clone(), client.clone());
-        client
+        Ok(client)
     }
 
-    /// Query upstream servers using the configured strategy
+    /// Query upstream servers using the configured strategy.
+    ///
+    /// Per-query diagnostics are emitted at `debug`: keeping these messages at
+    /// `info` made the default log level format and enqueue several records for
+    /// every DNS request. The DNS transaction ID is sufficient to correlate a
+    /// query's diagnostics without allocating a random UUID string.
     pub async fn query(&self, query: &DnsQuery) -> Result<QueryResult> {
-        use tracing::info;
-        
-        let trace_id = Uuid::new_v4().to_string();
+        use tracing::{debug, warn};
+
+        let trace_id = self.query_counter.fetch_add(1, Ordering::Relaxed);
         let strategy = self.get_strategy().await;
-        info!("[{}] Query start: {} {} using {}", trace_id, query.name, query.record_type, strategy);
-        
+        debug!(
+            trace_id,
+            domain = %query.name,
+            record_type = %query.record_type,
+            strategy = %strategy,
+            "Upstream query started"
+        );
+
         let result = match strategy {
-            QueryStrategy::Concurrent => self.query_concurrent(query, &trace_id).await,
-            QueryStrategy::Fastest => self.query_fastest(query, &trace_id).await,
-            QueryStrategy::RoundRobin => self.query_round_robin(query, &trace_id).await,
-            QueryStrategy::Random => self.query_random(query, &trace_id).await,
+            QueryStrategy::Concurrent => self.query_concurrent(query, trace_id).await,
+            QueryStrategy::Fastest => self.query_fastest(query, trace_id).await,
+            QueryStrategy::RoundRobin => self.query_round_robin(query, trace_id).await,
+            QueryStrategy::Random => self.query_random(query, trace_id).await,
         };
-        
+
         match &result {
-            Ok(r) => info!(
-                "[{}] Query complete: {} {} -> {} ({} answers, {}ms)",
-                trace_id, query.name, query.record_type, 
-                r.response.response_code, r.response.answers.len(), r.response_time_ms
+            Ok(response) => debug!(
+                trace_id,
+                domain = %query.name,
+                record_type = %query.record_type,
+                response_code = %response.response.response_code,
+                answer_count = response.response.answers.len(),
+                response_time_ms = response.response_time_ms,
+                "Upstream query completed"
             ),
-            Err(e) => info!("[{}] Query failed: {} {} -> {}", trace_id, query.name, query.record_type, e),
+            Err(error) => warn!(
+                trace_id,
+                domain = %query.name,
+                record_type = %query.record_type,
+                %error,
+                "Upstream query failed"
+            ),
         }
-        
+
         result
     }
 
     /// Query all servers concurrently, return first successful response and cancel others
-    async fn query_concurrent(&self, query: &DnsQuery, trace_id: &str) -> Result<QueryResult> {
-        use tracing::{debug, info, warn};
+    async fn query_concurrent(&self, query: &DnsQuery, trace_id: u64) -> Result<QueryResult> {
         use crate::dns::message::DnsResponseCode;
         use tokio::select;
         use tokio_util::sync::CancellationToken;
-        
-        let servers = self.upstream_manager.get_healthy_servers().await;
-        
-        if servers.is_empty() {
-            return Err(anyhow!("No healthy upstream servers available"));
-        }
+        use tracing::{debug, warn};
 
-        let server_info: Vec<String> = servers.iter()
-            .map(|s| format!("{} (addr: {}, protocol: {})", s.name, s.address, s.protocol))
-            .collect();
-        info!("[{}] [Concurrent] Querying {} servers: {}", trace_id, servers.len(), server_info.join(", "));
+        let servers = self.healthy_servers_or_err().await?;
+
+        debug!(
+            trace_id,
+            server_count = servers.len(),
+            "Querying upstream servers concurrently"
+        );
 
         // Create cancellation token for all tasks
         let cancel_token = CancellationToken::new();
@@ -186,38 +202,61 @@ impl ProxyManager {
         // Spawn concurrent queries to all servers
         for server in servers.clone() {
             let q = query.clone();
-            let tid = trace_id.to_string();
+            let tid = trace_id;
             let server_name = server.name.clone();
             let server_addr = server.address.clone();
             let server_id = server.id;
             let protocol = server.protocol;
             let token = cancel_token.clone();
-            
-            // Get client before spawning task to avoid capturing self
-            let client = self.get_client(&server).await;
+
+            // Get client before spawning task to avoid capturing self.
+            // A client that cannot even be built is a configuration failure for
+            // this server, not for the query: skip it and let the others race.
+            let client = match self.get_client(&server).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(
+                        "[{}] [Concurrent] Skipping {}: {}",
+                        trace_id, server.name, e
+                    );
+                    self.upstream_manager.record_failure(server.id).await;
+                    continue;
+                }
+            };
+
+            // Every branch records its own outcome. A server that answered
+            // correctly but lost the race still gets credit, otherwise its
+            // latency sample would never update and the Fastest strategy
+            // could never see it.
+            let manager = self.upstream_manager.clone();
 
             let handle = tokio::spawn(async move {
-                debug!("[{}] [Concurrent] Starting query to {} ({}) via {}", tid, server_name, server_addr, protocol);
-                
+                debug!(
+                    "[{}] [Concurrent] Starting query to {} ({}) via {}",
+                    tid, server_name, server_addr, protocol
+                );
+
                 select! {
                     _ = token.cancelled() => {
                         debug!("[{}] [Concurrent] Query to {} cancelled", tid, server_name);
-                        // Return None to indicate cancelled (not a failure)
+                        // Cancelled before answering: neither success nor failure.
                         None
                     }
                     result = async {
                         client.query(&q).await
                     } => {
-                        // Log individual server result
                         match &result {
-                            Ok(r) => info!(
-                                "[{}] [Concurrent] {} responded: {} in {}ms", 
-                                tid, server_name, r.response.response_code, r.response_time_ms
-                            ),
+                            Ok(r) => {
+                                debug!(
+                                    "[{}] [Concurrent] {} responded: {} in {}ms",
+                                    tid, server_name, r.response.response_code, r.response_time_ms
+                                );
+                                manager.record_success(server_id, r.response_time_ms).await;
+                            }
                             Err(e) => {
-                                let fail_count = TOTAL_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-                                warn!("[{}] [Concurrent] {} failed: {}, 当前失败总数: {}", tid, server_name, e, fail_count);
-                            },
+                                warn!("[{}] [Concurrent] {} failed: {}", tid, server_name, e);
+                                manager.record_failure(server_id).await;
+                            }
                         }
                         Some((server_id, result))
                     }
@@ -238,41 +277,39 @@ impl ProxyManager {
             let (result, _index, remaining) = futures::future::select_all(handles).await;
             handles = remaining;
 
+            // Outcomes are already recorded inside each task; this loop only
+            // picks the winner.
             match result {
                 Ok(Some((_server_id, Ok(query_result)))) => {
                     let response_code = &query_result.response.response_code;
                     // Accept NoError and NxDomain as valid responses
-                    if *response_code == DnsResponseCode::NoError || *response_code == DnsResponseCode::NxDomain {
-                        info!(
+                    if *response_code == DnsResponseCode::NoError
+                        || *response_code == DnsResponseCode::NxDomain
+                    {
+                        debug!(
                             "[{}] [Concurrent] Winner: {} ({}ms) - {} answers, cancelling {} remaining queries",
                             trace_id,
-                            query_result.server_name, 
+                            query_result.server_name,
                             query_result.response_time_ms,
                             query_result.response.answers.len(),
                             handles.len()
                         );
-                        
+
                         // Cancel all remaining queries
                         cancel_token.cancel();
-                        
-                        // Record success
-                        self.upstream_manager
-                            .record_success(query_result.server_id, query_result.response_time_ms)
-                            .await;
                         return Ok(query_result);
                     } else {
-                        self.upstream_manager.record_failure(query_result.server_id).await;
-                        let fail_count = TOTAL_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-                        last_error = Some(format!("{} returned {}", query_result.server_name, response_code));
+                        last_error = Some(format!(
+                            "{} returned {}",
+                            query_result.server_name, response_code
+                        ));
                         warn!(
-                            "[{}] [Concurrent] {} returned error: {}, 当前失败总数: {}",
-                            trace_id, query_result.server_name, response_code, fail_count
+                            "[{}] [Concurrent] {} returned error: {}",
+                            trace_id, query_result.server_name, response_code
                         );
                     }
                 }
-                Ok(Some((server_id, Err(e)))) => {
-                    // Record failure for this server
-                    self.upstream_manager.record_failure(server_id).await;
+                Ok(Some((_server_id, Err(e)))) => {
                     last_error = Some(e.to_string());
                 }
                 Ok(None) => {
@@ -284,113 +321,104 @@ impl ProxyManager {
             }
         }
 
-        Err(anyhow!("All upstream servers failed: {}", 
-            last_error.unwrap_or_else(|| "unknown error".to_string())))
+        Err(anyhow!(
+            "All upstream servers failed: {}",
+            last_error.unwrap_or_else(|| "unknown error".to_string())
+        ))
     }
 
-    /// Query the fastest server based on historical response times
-    /// Falls back to concurrent strategy if any server lacks historical data
-    /// Periodically re-probes all servers to handle network changes
-    async fn query_fastest(&self, query: &DnsQuery, trace_id: &str) -> Result<QueryResult> {
-        use tracing::info;
-        
-        // Check if all healthy servers have recent stats (within last 5 minutes)
-        let needs_probe = self.upstream_manager.needs_reprobe().await;
-        
-        if needs_probe {
-            info!(
-                "[{}] [Fastest] Some servers need re-probing, using concurrent strategy",
-                trace_id
-            );
-            return self.query_concurrent(query, trace_id).await;
-        }
-        
-        let server = self.upstream_manager.get_fastest_server().await
+    /// Query the single server with the best recorded latency.
+    ///
+    /// Servers lacking a fresh latency sample are probed by the background
+    /// health checker, not by degrading this query into a concurrent fan-out.
+    async fn query_fastest(&self, query: &DnsQuery, trace_id: u64) -> Result<QueryResult> {
+        let server = self
+            .upstream_manager
+            .get_fastest_server()
+            .await
             .ok_or_else(|| anyhow!("No healthy upstream servers available"))?;
 
-        let avg_time = self.upstream_manager.get_stats(server.id).await
-            .map(|s| s.avg_response_time_ms())
-            .unwrap_or(0);
-
-        info!(
-            "[{}] [Fastest] Selected server: {}, addr: {}, protocol: {} (avg response time: {}ms)",
-            trace_id,
-            server.name,
-            server.address,
-            server.protocol,
-            avg_time
-        );
-
+        self.log_selection("Fastest", trace_id, &server, None).await;
         self.query_server(server, query, trace_id).await
     }
 
     /// Query servers in round-robin fashion
-    async fn query_round_robin(&self, query: &DnsQuery, trace_id: &str) -> Result<QueryResult> {
-        use tracing::info;
-        
-        let servers = self.upstream_manager.get_healthy_servers().await;
-        
-        if servers.is_empty() {
-            return Err(anyhow!("No healthy upstream servers available"));
-        }
-
+    async fn query_round_robin(&self, query: &DnsQuery, trace_id: u64) -> Result<QueryResult> {
+        let servers = self.healthy_servers_or_err().await?;
         let index = self.round_robin_counter.fetch_add(1, Ordering::Relaxed) % servers.len();
         let server = servers[index].clone();
 
-        info!(
-            "[{}] [RoundRobin] Selected server #{}: {}, addr: {}, protocol: {} (avg response time: {}ms)",
-            trace_id,
-            index,
-            server.name,
-            server.address,
-            server.protocol,
-            self.upstream_manager.get_stats(server.id).await
-                .map(|s| s.avg_response_time_ms())
-                .unwrap_or(0)
-        );
-
+        self.log_selection("RoundRobin", trace_id, &server, Some(index))
+            .await;
         self.query_server(server, query, trace_id).await
     }
 
     /// Query a random server
-    async fn query_random(&self, query: &DnsQuery, trace_id: &str) -> Result<QueryResult> {
-        use tracing::info;
-        
-        let servers = self.upstream_manager.get_healthy_servers().await;
-        
-        if servers.is_empty() {
-            return Err(anyhow!("No healthy upstream servers available"));
-        }
-
+    async fn query_random(&self, query: &DnsQuery, trace_id: u64) -> Result<QueryResult> {
+        let servers = self.healthy_servers_or_err().await?;
         let index = rand::thread_rng().gen_range(0..servers.len());
         let server = servers[index].clone();
 
-        info!(
-            "[{}] [Random] Selected server #{}: {}, addr: {}, protocol: {} (avg response time: {}ms)",
-            trace_id,
-            index,
-            server.name,
-            server.address,
-            server.protocol,
-            self.upstream_manager.get_stats(server.id).await
-                .map(|s| s.avg_response_time_ms())
-                .unwrap_or(0)
-        );
-
+        self.log_selection("Random", trace_id, &server, Some(index))
+            .await;
         self.query_server(server, query, trace_id).await
     }
 
+    /// Healthy servers, or the shared "nothing available" error.
+    async fn healthy_servers_or_err(&self) -> Result<Vec<UpstreamServer>> {
+        let servers = self.upstream_manager.get_healthy_servers().await;
+        if servers.is_empty() {
+            return Err(anyhow!("No healthy upstream servers available"));
+        }
+        Ok(servers)
+    }
+
+    /// Log which server a single-target strategy picked, with its known latency.
+    async fn log_selection(
+        &self,
+        strategy: &str,
+        trace_id: u64,
+        server: &UpstreamServer,
+        index: Option<usize>,
+    ) {
+        let avg_time = self
+            .upstream_manager
+            .get_stats(server.id)
+            .await
+            .map(|s| s.smoothed_latency_ms())
+            .unwrap_or(0);
+
+        tracing::debug!(
+            trace_id,
+            strategy,
+            index,
+            server = %server.name,
+            address = %server.address,
+            protocol = %server.protocol,
+            average_response_time_ms = avg_time,
+            "Selected upstream server"
+        );
+    }
+
     /// Query a specific server with failover
-    async fn query_server(&self, server: UpstreamServer, query: &DnsQuery, trace_id: &str) -> Result<QueryResult> {
-        use tracing::{info, warn};
-        
-        let client = self.get_client(&server).await;
-        
+    async fn query_server(
+        &self,
+        server: UpstreamServer,
+        query: &DnsQuery,
+        trace_id: u64,
+    ) -> Result<QueryResult> {
+        use tracing::{debug, warn};
+
+        let client = self.get_client(&server).await?;
+
         match client.query(query).await {
             Ok(result) => {
-                info!(
+                debug!(
                     "[{}] Server {} responded: {} in {}ms",
-                    trace_id, result.server_name, result.response.response_code, result.response_time_ms
+                    trace_id,
+                    result.server_name,
+                    result.response.response_code,
+                    result.response_time_ms
                 );
                 self.upstream_manager
                     .record_success(result.server_id, result.response_time_ms)
@@ -398,40 +426,57 @@ impl ProxyManager {
                 Ok(result)
             }
             Err(e) => {
-                let fail_count = TOTAL_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-                warn!("[{}] Server {} failed: {}, trying failover, 当前失败总数: {}", trace_id, server.name, e, fail_count);
+                warn!(
+                    "[{}] Server {} failed: {}, trying failover",
+                    trace_id, server.name, e
+                );
                 self.upstream_manager.record_failure(server.id).await;
-                
+
                 // Try failover to another server
-                self.failover_query(query, server.id, trace_id).await
+                self.failover_query(query, server.id, trace_id)
+                    .await
                     .map_err(|_| anyhow!("Query failed and failover exhausted: {}", e))
             }
         }
     }
 
     /// Attempt failover to another server
-    async fn failover_query(&self, query: &DnsQuery, failed_server_id: i64, trace_id: &str) -> Result<QueryResult> {
-        use tracing::{info, warn};
-        
+    async fn failover_query(
+        &self,
+        query: &DnsQuery,
+        failed_server_id: i64,
+        trace_id: u64,
+    ) -> Result<QueryResult> {
+        use tracing::{debug, warn};
+
         let servers = self.upstream_manager.get_healthy_servers().await;
-        
+
         // Try other servers
         for server in servers {
             if server.id == failed_server_id {
                 continue;
             }
 
-            info!(
+            debug!(
                 "[{}] [Failover] Trying server: {}, addr: {}, protocol: {}",
                 trace_id, server.name, server.address, server.protocol
             );
-            
-            let client = self.get_client(&server).await;
+
+            let client = match self.get_client(&server).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("[{}] [Failover] Skipping {}: {}", trace_id, server.name, e);
+                    continue;
+                }
+            };
             match client.query(query).await {
                 Ok(result) => {
-                    info!(
+                    debug!(
                         "[{}] [Failover] Server {} succeeded: {} in {}ms",
-                        trace_id, result.server_name, result.response.response_code, result.response_time_ms
+                        trace_id,
+                        result.server_name,
+                        result.response.response_code,
+                        result.response_time_ms
                     );
                     self.upstream_manager
                         .record_success(result.server_id, result.response_time_ms)
@@ -439,8 +484,10 @@ impl ProxyManager {
                     return Ok(result);
                 }
                 Err(e) => {
-                    let fail_count = TOTAL_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-                    warn!("[{}] [Failover] Server {} failed: {}, 当前失败总数: {}", trace_id, server.name, e, fail_count);
+                    warn!(
+                        "[{}] [Failover] Server {} failed: {}",
+                        trace_id, server.name, e
+                    );
                     self.upstream_manager.record_failure(server.id).await;
                 }
             }
@@ -450,7 +497,6 @@ impl ProxyManager {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,13 +504,34 @@ mod tests {
 
     #[test]
     fn test_strategy_from_str() {
-        assert_eq!(QueryStrategy::from_str("concurrent"), Some(QueryStrategy::Concurrent));
-        assert_eq!(QueryStrategy::from_str("CONCURRENT"), Some(QueryStrategy::Concurrent));
-        assert_eq!(QueryStrategy::from_str("fastest"), Some(QueryStrategy::Fastest));
-        assert_eq!(QueryStrategy::from_str("fastest_first"), Some(QueryStrategy::Fastest));
-        assert_eq!(QueryStrategy::from_str("round_robin"), Some(QueryStrategy::RoundRobin));
-        assert_eq!(QueryStrategy::from_str("roundrobin"), Some(QueryStrategy::RoundRobin));
-        assert_eq!(QueryStrategy::from_str("random"), Some(QueryStrategy::Random));
+        assert_eq!(
+            QueryStrategy::from_str("concurrent"),
+            Some(QueryStrategy::Concurrent)
+        );
+        assert_eq!(
+            QueryStrategy::from_str("CONCURRENT"),
+            Some(QueryStrategy::Concurrent)
+        );
+        assert_eq!(
+            QueryStrategy::from_str("fastest"),
+            Some(QueryStrategy::Fastest)
+        );
+        assert_eq!(
+            QueryStrategy::from_str("fastest_first"),
+            Some(QueryStrategy::Fastest)
+        );
+        assert_eq!(
+            QueryStrategy::from_str("round_robin"),
+            Some(QueryStrategy::RoundRobin)
+        );
+        assert_eq!(
+            QueryStrategy::from_str("roundrobin"),
+            Some(QueryStrategy::RoundRobin)
+        );
+        assert_eq!(
+            QueryStrategy::from_str("random"),
+            Some(QueryStrategy::Random)
+        );
         assert_eq!(QueryStrategy::from_str("invalid"), None);
     }
 
@@ -486,10 +553,16 @@ mod tests {
         let upstream_manager = Arc::new(UpstreamManager::new());
         let proxy_manager = ProxyManager::new(upstream_manager);
 
-        assert_eq!(proxy_manager.get_strategy().await, QueryStrategy::Concurrent);
+        assert_eq!(
+            proxy_manager.get_strategy().await,
+            QueryStrategy::Concurrent
+        );
 
         proxy_manager.set_strategy(QueryStrategy::RoundRobin).await;
-        assert_eq!(proxy_manager.get_strategy().await, QueryStrategy::RoundRobin);
+        assert_eq!(
+            proxy_manager.get_strategy().await,
+            QueryStrategy::RoundRobin
+        );
     }
 
     #[tokio::test]
@@ -506,24 +579,42 @@ mod tests {
     #[tokio::test]
     async fn test_round_robin_counter() {
         let upstream_manager = Arc::new(UpstreamManager::new());
-        
+
         // Add multiple servers
-        upstream_manager.add_server(UpstreamServer::new(
-            1, "Server1", "8.8.8.8:53", UpstreamProtocol::Udp, 5000,
-        )).await;
-        upstream_manager.add_server(UpstreamServer::new(
-            2, "Server2", "8.8.4.4:53", UpstreamProtocol::Udp, 5000,
-        )).await;
-        upstream_manager.add_server(UpstreamServer::new(
-            3, "Server3", "1.1.1.1:53", UpstreamProtocol::Udp, 5000,
-        )).await;
+        upstream_manager
+            .add_server(UpstreamServer::new(
+                1,
+                "Server1",
+                "8.8.8.8:53",
+                UpstreamProtocol::Udp,
+                5000,
+            ))
+            .await;
+        upstream_manager
+            .add_server(UpstreamServer::new(
+                2,
+                "Server2",
+                "8.8.4.4:53",
+                UpstreamProtocol::Udp,
+                5000,
+            ))
+            .await;
+        upstream_manager
+            .add_server(UpstreamServer::new(
+                3,
+                "Server3",
+                "1.1.1.1:53",
+                UpstreamProtocol::Udp,
+                5000,
+            ))
+            .await;
 
         let proxy_manager = ProxyManager::new(upstream_manager);
         proxy_manager.set_strategy(QueryStrategy::RoundRobin).await;
 
         // Verify counter increments
         let initial = proxy_manager.round_robin_counter.load(Ordering::Relaxed);
-        
+
         // The counter should increment on each query attempt
         // (even if the query fails due to network issues in tests)
         assert_eq!(initial, 0);

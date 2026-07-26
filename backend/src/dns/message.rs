@@ -7,11 +7,11 @@ use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::{Name, RData, Record, RecordType as TrustRecordType};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 /// DNS-specific errors
 #[derive(Error, Debug)]
@@ -132,7 +132,6 @@ impl FromStr for RecordType {
     }
 }
 
-
 /// DNS query structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DnsQuery {
@@ -144,6 +143,12 @@ pub struct DnsQuery {
     pub record_type: RecordType,
     /// Whether recursion is desired
     pub recursion_desired: bool,
+    /// EDNS(0) advertised UDP payload size, when the client sent an OPT record.
+    ///
+    /// `None` means the client did not use EDNS, so responses must respect the
+    /// classic 512 byte UDP limit from RFC 1035.
+    #[serde(default)]
+    pub udp_payload_size: Option<u16>,
 }
 
 impl DnsQuery {
@@ -154,6 +159,7 @@ impl DnsQuery {
             name: name.into(),
             record_type,
             recursion_desired: true,
+            udp_payload_size: None,
         }
     }
 
@@ -164,13 +170,13 @@ impl DnsQuery {
             name: name.into(),
             record_type,
             recursion_desired: true,
+            udp_payload_size: None,
         }
     }
 
     /// Parse a DNS query from raw bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self, DnsError> {
-        let message = Message::from_bytes(data)
-            .map_err(|e| DnsError::ParseError(e.to_string()))?;
+        let message = Message::from_bytes(data).map_err(|e| DnsError::ParseError(e.to_string()))?;
 
         let query = message
             .queries()
@@ -185,13 +191,14 @@ impl DnsQuery {
             name: query.name().to_string().trim_end_matches('.').to_string(),
             record_type,
             recursion_desired: message.recursion_desired(),
+            udp_payload_size: message.extensions().as_ref().map(|edns| edns.max_payload()),
         })
     }
 
     /// Encode the DNS query to raw bytes
     pub fn to_bytes(&self) -> Result<Vec<u8>, DnsError> {
-        let name = Name::from_str(&self.name)
-            .map_err(|e| DnsError::InvalidDomainName(e.to_string()))?;
+        let name =
+            Name::from_str(&self.name).map_err(|e| DnsError::InvalidDomainName(e.to_string()))?;
 
         let mut message = Message::new();
         message.set_id(self.id);
@@ -199,14 +206,57 @@ impl DnsQuery {
         message.set_op_code(OpCode::Query);
         message.set_recursion_desired(self.recursion_desired);
 
-        message.add_query(
-            hickory_proto::op::Query::query(name, self.record_type.to_trust_dns())
-        );
+        message.add_query(hickory_proto::op::Query::query(
+            name,
+            self.record_type.to_trust_dns(),
+        ));
+
+        // Preserve the client's EDNS(0) buffer advertisement so the upstream can
+        // return large answers instead of truncating them.
+        if let Some(payload_size) = self.udp_payload_size {
+            let mut edns = hickory_proto::op::Edns::new();
+            edns.set_max_payload(payload_size);
+            message.set_edns(edns);
+        }
 
         message
             .to_bytes()
             .map_err(|e| DnsError::EncodeError(e.to_string()))
     }
+
+    /// Maximum response size this client can accept over UDP.
+    ///
+    /// RFC 6891 lets clients advertise a larger buffer via EDNS(0); without it
+    /// the classic 512 byte limit applies.
+    pub fn max_udp_response_size(&self) -> usize {
+        const CLASSIC_UDP_LIMIT: usize = 512;
+        const MIN_EDNS_LIMIT: usize = 512;
+        const MAX_EDNS_LIMIT: usize = 4096;
+
+        match self.udp_payload_size {
+            None => CLASSIC_UDP_LIMIT,
+            Some(advertised) => (advertised as usize).clamp(MIN_EDNS_LIMIT, MAX_EDNS_LIMIT),
+        }
+    }
+}
+
+/// Transaction ID from a raw DNS message header, if it parses.
+///
+/// The UDP client uses this to drop datagrams that do not belong to the query
+/// it sent: without the check any host able to guess the source port could
+/// inject a forged answer.
+pub fn message_transaction_id(data: &[u8]) -> Option<u16> {
+    Message::from_bytes(data).ok().map(|m| m.id())
+}
+
+/// Whether a raw DNS message has the TC (truncated) header bit set.
+///
+/// Used by the UDP upstream client to decide whether the answer must be
+/// re-fetched over TCP per RFC 1035 section 4.2.1.
+pub fn message_is_truncated(data: &[u8]) -> bool {
+    Message::from_bytes(data)
+        .map(|m| m.truncated())
+        .unwrap_or(false)
 }
 
 /// Generate a random query ID
@@ -269,7 +319,12 @@ impl DnsRecordData {
     }
 
     /// Create a new MX record
-    pub fn mx(name: impl Into<String>, exchange: impl Into<String>, priority: u16, ttl: u32) -> Self {
+    pub fn mx(
+        name: impl Into<String>,
+        exchange: impl Into<String>,
+        priority: u16,
+        ttl: u32,
+    ) -> Self {
         Self {
             name: name.into(),
             record_type: RecordType::MX,
@@ -312,7 +367,6 @@ impl DnsRecordData {
         }
     }
 }
-
 
 /// DNS response codes
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -449,10 +503,19 @@ impl DnsResponse {
         self.answers.push(record);
     }
 
+    /// Smallest TTL across the answer records, if there are any.
+    ///
+    /// The whole answer set becomes stale as soon as its shortest-lived record
+    /// does, so the minimum is what a cache may honour. `None` means there are
+    /// no answers (an empty or negative response), leaving the caller to decide
+    /// how long that fact holds.
+    pub fn min_answer_ttl(&self) -> Option<u32> {
+        self.answers.iter().map(|answer| answer.ttl).min()
+    }
+
     /// Parse a DNS response from raw bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self, DnsError> {
-        let message = Message::from_bytes(data)
-            .map_err(|e| DnsError::ParseError(e.to_string()))?;
+        let message = Message::from_bytes(data).map_err(|e| DnsError::ParseError(e.to_string()))?;
 
         let response_code = DnsResponseCode::from_trust_dns(message.response_code());
 
@@ -487,8 +550,48 @@ impl DnsResponse {
 
     /// Encode the DNS response to raw bytes for a given query
     pub fn to_bytes(&self, query: &DnsQuery) -> Result<Vec<u8>, DnsError> {
-        let query_name = Name::from_str(&query.name)
-            .map_err(|e| DnsError::InvalidDomainName(e.to_string()))?;
+        self.to_message(query)?
+            .to_bytes()
+            .map_err(|e| DnsError::EncodeError(e.to_string()))
+    }
+
+    /// Encode the response for a datagram transport that cannot fragment.
+    ///
+    /// UDP has no way to signal "answer continues", so RFC 1035 section 4.2.1
+    /// requires oversized answers to be sent with the TC bit set and the
+    /// records dropped, letting the client retry over TCP. Emitting an
+    /// oversized datagram instead would either be refused by the socket or be
+    /// silently cut by the network, which is how truncated answers used to
+    /// reach clients as if they were complete.
+    pub fn to_bytes_for_udp(&self, query: &DnsQuery) -> Result<Vec<u8>, DnsError> {
+        let full = self.to_bytes(query)?;
+        let limit = query.max_udp_response_size();
+
+        if full.len() <= limit {
+            return Ok(full);
+        }
+
+        let mut header_only = Self {
+            id: self.id,
+            response_code: self.response_code,
+            authoritative: self.authoritative,
+            recursion_available: self.recursion_available,
+            answers: Vec::new(),
+            authority: Vec::new(),
+            additional: Vec::new(),
+        }
+        .to_message(query)?;
+        header_only.set_truncated(true);
+
+        header_only
+            .to_bytes()
+            .map_err(|e| DnsError::EncodeError(e.to_string()))
+    }
+
+    /// Build the hickory message for this response without serializing it.
+    fn to_message(&self, query: &DnsQuery) -> Result<Message, DnsError> {
+        let query_name =
+            Name::from_str(&query.name).map_err(|e| DnsError::InvalidDomainName(e.to_string()))?;
 
         let mut message = Message::new();
         message.set_id(self.id);
@@ -499,38 +602,39 @@ impl DnsResponse {
         message.set_recursion_available(self.recursion_available);
         message.set_response_code(self.response_code.to_trust_dns());
 
-        // Add the original query
-        message.add_query(
-            hickory_proto::op::Query::query(query_name, query.record_type.to_trust_dns())
-        );
+        message.add_query(hickory_proto::op::Query::query(
+            query_name,
+            query.record_type.to_trust_dns(),
+        ));
 
-        // Add answer records
         for answer in &self.answers {
             if let Some(record) = data_to_record(answer) {
                 message.add_answer(record);
             }
         }
 
-        // Add authority records
         for auth in &self.authority {
             if let Some(record) = data_to_record(auth) {
                 message.add_name_server(record);
             }
         }
 
-        // Add additional records
         for add in &self.additional {
             if let Some(record) = data_to_record(add) {
                 message.add_additional(record);
             }
         }
 
-        message
-            .to_bytes()
-            .map_err(|e| DnsError::EncodeError(e.to_string()))
+        // Echo the client's EDNS(0) buffer size so it knows we honoured it.
+        if let Some(payload_size) = query.udp_payload_size {
+            let mut edns = hickory_proto::op::Edns::new();
+            edns.set_max_payload(payload_size);
+            message.set_edns(edns);
+        }
+
+        Ok(message)
     }
 }
-
 
 /// Convert a hickory-proto Record to DnsRecordData
 fn record_to_data(record: &Record) -> Option<DnsRecordData> {
@@ -655,9 +759,7 @@ fn data_to_record(data: &DnsRecordData) -> Option<Record> {
             let priority = data.priority.unwrap_or(10);
             RData::MX(hickory_proto::rr::rdata::MX::new(priority, exchange))
         }
-        RecordType::TXT => {
-            RData::TXT(hickory_proto::rr::rdata::TXT::new(vec![data.value.clone()]))
-        }
+        RecordType::TXT => RData::TXT(hickory_proto::rr::rdata::TXT::new(vec![data.value.clone()])),
         RecordType::PTR => {
             let target = Name::from_str(&data.value).ok()?;
             RData::PTR(hickory_proto::rr::rdata::PTR(target))
@@ -744,7 +846,11 @@ mod tests {
     #[test]
     fn test_dns_response_creation() {
         let mut response = DnsResponse::new(12345);
-        response.add_answer(DnsRecordData::a("example.com", "93.184.216.34".parse().unwrap(), 300));
+        response.add_answer(DnsRecordData::a(
+            "example.com",
+            "93.184.216.34".parse().unwrap(),
+            300,
+        ));
 
         assert_eq!(response.id, 12345);
         assert_eq!(response.response_code, DnsResponseCode::NoError);
@@ -825,17 +931,17 @@ mod property_tests {
             record_type in record_type_strategy()
         ) {
             let query = DnsQuery::with_id(id, &domain, record_type);
-            
+
             // Encode to bytes
             let bytes = query.to_bytes();
             prop_assert!(bytes.is_ok(), "Query encoding should succeed");
-            
+
             // Decode from bytes
             let parsed = DnsQuery::from_bytes(&bytes.unwrap());
             prop_assert!(parsed.is_ok(), "Query decoding should succeed");
-            
+
             let parsed = parsed.unwrap();
-            
+
             // Verify round-trip preserves data
             prop_assert_eq!(parsed.id, id, "Query ID should be preserved");
             prop_assert_eq!(parsed.name.to_lowercase(), domain.to_lowercase(), "Domain name should be preserved");
@@ -849,7 +955,7 @@ mod property_tests {
         fn prop_record_type_string_roundtrip(record_type in record_type_strategy()) {
             let type_str = record_type.to_string();
             let parsed = RecordType::from_str(&type_str);
-            
+
             prop_assert!(parsed.is_ok(), "Record type string parsing should succeed");
             prop_assert_eq!(parsed.unwrap(), record_type, "Record type should be preserved after string round-trip");
         }
@@ -865,7 +971,7 @@ mod property_tests {
         ) {
             let ip = Ipv4Addr::new(ip_octets.0, ip_octets.1, ip_octets.2, ip_octets.3);
             let record = DnsRecordData::a(&domain, ip, ttl);
-            
+
             prop_assert_eq!(record.name, domain, "Domain name should be preserved");
             prop_assert_eq!(record.record_type, RecordType::A, "Record type should be A");
             prop_assert_eq!(record.value, ip.to_string(), "IP address should be preserved");
@@ -888,7 +994,7 @@ mod property_tests {
                 ip_segments.4, ip_segments.5, ip_segments.6, ip_segments.7
             );
             let record = DnsRecordData::aaaa(&domain, ip, ttl);
-            
+
             prop_assert_eq!(record.name, domain, "Domain name should be preserved");
             prop_assert_eq!(record.record_type, RecordType::AAAA, "Record type should be AAAA");
             prop_assert_eq!(record.ttl, ttl, "TTL should be preserved");
@@ -906,7 +1012,7 @@ mod property_tests {
             ttl in 1u32..86400u32
         ) {
             let record = DnsRecordData::mx(&domain, &exchange, priority, ttl);
-            
+
             prop_assert_eq!(record.record_type, RecordType::MX, "Record type should be MX");
             prop_assert_eq!(record.priority, Some(priority), "Priority should be preserved");
             prop_assert_eq!(record.value, exchange, "Exchange should be preserved");
@@ -924,10 +1030,10 @@ mod property_tests {
                 4 => DnsResponseCode::NotImp,
                 _ => DnsResponseCode::Refused,
             };
-            
+
             let trust_code = code.to_trust_dns();
             let back = DnsResponseCode::from_trust_dns(trust_code);
-            
+
             prop_assert_eq!(back, code, "Response code should be preserved after round-trip");
         }
     }
