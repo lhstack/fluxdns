@@ -46,13 +46,13 @@ mod property_tests {
         let proxy = Arc::new(ProxyManager::new(upstream_manager));
 
         let resolver = Arc::new(DnsResolver::new(rewrite_engine, cache, proxy));
-        
+
         // Add the rewrite rule synchronously via a runtime
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             resolver.rewrite_engine().add_rule(rule).await;
         });
-        
+
         resolver
     }
 
@@ -377,7 +377,7 @@ mod property_tests {
                 // Query for AAAA record should miss cache and attempt upstream
                 let aaaa_query = DnsQuery::with_id(query_id, &domain, RecordType::AAAA);
                 let aaaa_result = resolver.resolve(&aaaa_query).await;
-                
+
                 // Should fail because no upstream servers (cache miss for AAAA)
                 prop_assert!(
                     aaaa_result.is_err(),

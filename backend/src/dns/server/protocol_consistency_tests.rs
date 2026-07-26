@@ -14,7 +14,7 @@ mod property_tests {
 
     use proptest::prelude::*;
 
-    use crate::dns::cache::{CacheConfig, CacheManager, CacheKey};
+    use crate::dns::cache::{CacheConfig, CacheKey, CacheManager};
     use crate::dns::message::{DnsQuery, DnsRecordData, DnsResponse, DnsResponseCode, RecordType};
     use crate::dns::proxy::{ProxyManager, UpstreamManager};
     use crate::dns::resolver::DnsResolver;
@@ -80,7 +80,7 @@ mod property_tests {
             let cache_key = CacheKey::new(&domain, RecordType::A);
             let mut cached_response = DnsResponse::new(0);
             cached_response.add_answer(DnsRecordData::a(&domain, ip, ttl));
-            
+
             // Use tokio runtime for async operations
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {

@@ -112,7 +112,6 @@ import {
   Document,
   Refresh,
   Box,
-  ChatDotRound,
   Search,
   Tickets,
   Setting,
@@ -156,13 +155,6 @@ const features = [
     icon: Box,
     path: '/cache',
     gradient: 'linear-gradient(135deg, #fa709a 0%, #fee140 100%)'
-  },
-  {
-    title: 'AI 智能助手',
-    description: 'AI 驱动的 DNS 诊断分析，提供智能配置建议和问题排查',
-    icon: ChatDotRound,
-    path: '/llm',
-    gradient: 'linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%)'
   }
 ]
 

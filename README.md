@@ -7,7 +7,7 @@
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange?logo=rust)](https://www.rust-lang.org/)
 [![Vue](https://img.shields.io/badge/Vue-3.x-brightgreen?logo=vuedotjs)](https://vuejs.org/)
 
-**一个功能完整的 DNS 代理服务，支持多种协议、AI 智能助手和现代化 Web 管理界面。**
+**一个功能完整的 DNS 代理服务，支持多种协议和现代化 Web 管理界面。**
 
 [English](./README_EN.md) | 中文
 
@@ -43,7 +43,6 @@ curl "https://fluxdns.lhstack.xyz/dns-query?dns=q80BAAABAAAAAAAAA3d3dwdleGFtcGxl
 ![Listeners](./images/6.png)
 ![Settings](./images/7.png)
 ![Cache](./images/8.png)
-![AI Assistant](./images/9.png)
 ![Real-time Monitor](./images/10.png)
 
 </details>
@@ -79,13 +78,6 @@ curl "https://fluxdns.lhstack.xyz/dns-query?dns=q80BAAABAAAAAAAAA3d3dwdleGFtcGxl
 | 本地记录 | 自定义 DNS 记录，支持泛域名解析 |
 | 查询日志 | 详细的查询记录，支持时间范围筛选和导出 |
 | 链路追踪 | trace_id 支持，便于问题排查 |
-
-### 🤖 AI 智能助手
-
-- **DNS 诊断分析** - 智能分析 DNS 查询问题
-- **配置建议** - 根据使用场景提供优化建议
-- **多 LLM 支持** - 支持 OpenAI、DeepSeek 等 API
-- **上下文对话** - 保持对话历史，理解上下文
 
 ### 📊 实时监控仪表盘
 
@@ -268,10 +260,6 @@ LOG_LEVEL=info
 LOG_MAX_SIZE=10485760
 LOG_RETENTION_DAYS=30
 
-# AI 助手配置 (可选)
-LLM_API_URL=https://api.openai.com/v1
-LLM_API_KEY=your-api-key
-LLM_MODEL=gpt-4
 ```
 
 ### 默认账户
@@ -354,8 +342,16 @@ curl -X POST \
 
 ## 📝 更新日志
 
-### v1.1.6 (Latest)
-- 🚀 **连接稳定性优化** - 为 UDP 实现 Endpoint Pool (20 socket)，为 DoQ/DoH3 实现连接池 (20 连接)，大幅提升高并发下的稳定性
+### v1.1.7 (Latest)
+- 🏗️ **架构重构** - 按 Application、Business、Infrastructure 重新组织后端职责与依赖方向，移除旧目录和内置 AI 助手模块
+- 🚀 **DNS 热路径优化** - 将禁用记录类型和本地记录存在性改为内存状态，缓存命中不再执行每查询 SQLite 读取
+- 💾 **缓存优化** - 按响应最小 TTL 缓存并限制在 5～3600 秒，优化缓存键分配、重写匹配和近似 LRU 淘汰
+- 📝 **查询日志优化** - 使用有界队列批量写入 SQLite，移除每查询无界任务与单条事务，并暴露日志丢弃计数
+- 🌐 **上游稳定性** - 完善健康探测、失败恢复、连接复用和查询策略统计，降低默认日志级别下的逐查询开销
+- 🐳 **容器运行优化** - 使用 tini 转发退出信号并回收僵尸进程，明确暴露 DoQ/DoH3 所需的 UDP 端口
+
+### v1.1.6
+- 🚀 **连接稳定性优化** - 为 UDP 实现 Endpoint Pool (10 socket)，为 DoQ/DoH3 实现连接池 (10 连接)，大幅提升高并发下的稳定性
 - ✨ **DoQ 深度优化** - 启用 QUIC Keep-Alive (5s) 和空闲超时机制，彻底解决连接丢失问题
 - 🐛 **DoH3 修复** - 修复因缺少请求头导致的 500 错误，并实现连接复用
 - 📊 **监控增强** - 增加全局失败计数器，优化上游统计算法

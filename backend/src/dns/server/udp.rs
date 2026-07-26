@@ -14,6 +14,12 @@ use tracing::{debug, error, info, warn};
 use crate::dns::message::{DnsQuery, DnsResponse};
 use crate::dns::resolver::DnsResolver;
 
+/// Largest datagram accepted from a client.
+///
+/// Matches the largest EDNS(0) buffer this server is willing to honour so a
+/// legitimate query is never cut in half by the receive buffer.
+const MAX_UDP_DATAGRAM: usize = 4096;
+
 /// UDP DNS Server
 ///
 /// Handles DNS queries over UDP protocol.
@@ -29,7 +35,8 @@ pub struct UdpDnsServer {
 impl UdpDnsServer {
     /// Create a new UDP DNS server
     pub async fn new(bind_addr: SocketAddr, resolver: Arc<DnsResolver>) -> Result<Self> {
-        let socket = UdpSocket::bind(bind_addr).await
+        let socket = UdpSocket::bind(bind_addr)
+            .await
             .map_err(|e| anyhow!("Failed to bind UDP socket to {}: {}", bind_addr, e))?;
 
         info!("UDP DNS server bound to {}", bind_addr);
@@ -53,7 +60,8 @@ impl UdpDnsServer {
 
     /// Get the local address the server is actually bound to
     pub fn local_addr(&self) -> Result<SocketAddr> {
-        self.socket.local_addr()
+        self.socket
+            .local_addr()
             .map_err(|e| anyhow!("Failed to get local address: {}", e))
     }
 
@@ -63,7 +71,9 @@ impl UdpDnsServer {
     pub async fn run(self: Arc<Self>) -> Result<()> {
         info!("UDP DNS server starting on {}", self.bind_addr);
 
-        let mut buf = vec![0u8; 4096];
+        // EDNS(0) lets clients advertise buffers well past the classic 512
+        // bytes; a 4096 byte buffer silently cut larger datagrams.
+        let mut buf = vec![0u8; MAX_UDP_DATAGRAM];
 
         loop {
             match self.socket.recv_from(&mut buf).await {
@@ -87,17 +97,15 @@ impl UdpDnsServer {
     }
 
     /// Handle a single DNS query and send response
-    async fn handle_query_and_respond(
-        &self,
-        data: Vec<u8>,
-        src: SocketAddr,
-    ) -> Result<()> {
+    async fn handle_query_and_respond(&self, data: Vec<u8>, src: SocketAddr) -> Result<()> {
         debug!("Processing query from {}", src);
         let client_ip = src.ip().to_string();
         let response_bytes = Self::handle_query_internal(&self.resolver, &data, &client_ip).await?;
-        
+
         debug!("Sending {} byte response to {}", response_bytes.len(), src);
-        self.socket.send_to(&response_bytes, src).await
+        self.socket
+            .send_to(&response_bytes, src)
+            .await
             .map_err(|e| anyhow!("Failed to send response to {}: {}", src, e))?;
 
         debug!("Response sent to {}", src);
@@ -117,7 +125,8 @@ impl UdpDnsServer {
                 debug!("Failed to parse DNS query: {}", e);
                 // Return FORMERR response
                 let response = DnsResponse::servfail(0);
-                return response.to_bytes(&DnsQuery::new(".", crate::dns::message::RecordType::A))
+                return response
+                    .to_bytes(&DnsQuery::new(".", crate::dns::message::RecordType::A))
                     .map_err(|e| anyhow!("Failed to encode error response: {}", e));
             }
         };
@@ -133,7 +142,8 @@ impl UdpDnsServer {
             Err(e) => {
                 warn!("Failed to resolve query for {}: {}", query.name, e);
                 let response = DnsResponse::servfail(query.id);
-                return response.to_bytes(&query)
+                return response
+                    .to_bytes(&query)
                     .map_err(|e| anyhow!("Failed to encode error response: {}", e));
             }
         };
@@ -147,8 +157,10 @@ impl UdpDnsServer {
             result.metadata.response_time_ms
         );
 
-        // Encode the response
-        result.response.to_bytes(&query)
+        // Encode the response, honouring the datagram size limit
+        result
+            .response
+            .to_bytes_for_udp(&query)
             .map_err(|e| anyhow!("Failed to encode response: {}", e))
     }
 
@@ -158,7 +170,6 @@ impl UdpDnsServer {
         Self::handle_query_internal(&self.resolver, data, &client_ip).await
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -185,11 +196,11 @@ mod tests {
     #[tokio::test]
     async fn test_udp_server_creation() {
         let resolver = create_test_resolver();
-        
+
         // Use a random high port for testing
         let server = UdpDnsServer::new("127.0.0.1:0".parse().unwrap(), resolver).await;
         assert!(server.is_ok());
-        
+
         let server = server.unwrap();
         let local_addr = server.local_addr().unwrap();
         assert!(local_addr.port() > 0);
@@ -198,7 +209,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_query_with_cache() {
         let resolver = create_test_resolver();
-        
+
         // Pre-populate cache
         let cache_key = CacheKey::new("test.example.com", RecordType::A);
         let mut response = DnsResponse::new(0);
@@ -209,14 +220,19 @@ mod tests {
         ));
         resolver.cache().set(cache_key, response).await;
 
-        let server = UdpDnsServer::new("127.0.0.1:0".parse().unwrap(), resolver).await.unwrap();
+        let server = UdpDnsServer::new("127.0.0.1:0".parse().unwrap(), resolver)
+            .await
+            .unwrap();
 
         // Create a query
         let query = DnsQuery::with_id(12345, "test.example.com", RecordType::A);
         let query_bytes = query.to_bytes().unwrap();
 
         // Handle the query
-        let response_bytes = server.handle_query(&query_bytes, "127.0.0.1:1234".parse().unwrap()).await.unwrap();
+        let response_bytes = server
+            .handle_query(&query_bytes, "127.0.0.1:1234".parse().unwrap())
+            .await
+            .unwrap();
 
         // Parse the response
         let response = DnsResponse::from_bytes(&response_bytes).unwrap();
@@ -228,11 +244,15 @@ mod tests {
     #[tokio::test]
     async fn test_handle_invalid_query() {
         let resolver = create_test_resolver();
-        let server = UdpDnsServer::new("127.0.0.1:0".parse().unwrap(), resolver).await.unwrap();
+        let server = UdpDnsServer::new("127.0.0.1:0".parse().unwrap(), resolver)
+            .await
+            .unwrap();
 
         // Send invalid data
         let invalid_data = vec![0u8; 10];
-        let result = server.handle_query(&invalid_data, "127.0.0.1:1234".parse().unwrap()).await;
+        let result = server
+            .handle_query(&invalid_data, "127.0.0.1:1234".parse().unwrap())
+            .await;
 
         // Should return a SERVFAIL response
         assert!(result.is_ok());

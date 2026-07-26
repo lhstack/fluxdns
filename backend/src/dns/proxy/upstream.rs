@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::db::{Database, UpstreamServer as DbUpstreamServer};
+use super::client::create_client;
+use crate::infrastructure::repository::{Database, UpstreamServer as DbUpstreamServer};
 
 /// Supported upstream DNS protocols
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -58,7 +59,7 @@ impl UpstreamProtocol {
             UpstreamProtocol::Udp => 53,
             UpstreamProtocol::Dot => 853,
             UpstreamProtocol::Doh => 443,
-            UpstreamProtocol::Doq => 853,  // RFC 9250: DoQ uses UDP port 853
+            UpstreamProtocol::Doq => 853, // RFC 9250: DoQ uses UDP port 853
             UpstreamProtocol::Doh3 => 443, // DoH3 uses UDP port 443
         }
     }
@@ -69,7 +70,6 @@ impl std::fmt::Display for UpstreamProtocol {
         write!(f, "{}", self.as_str())
     }
 }
-
 
 /// Upstream server configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -140,9 +140,8 @@ pub struct UpstreamStats {
     pub ema_response_time_ms: f64,
     /// Last response time in milliseconds
     pub last_response_time_ms: Option<u64>,
-    /// Recent response times for sliding window (max 10)
-    #[serde(skip)]
-    recent_response_times: Vec<u64>,
+    /// Consecutive failures since the last success; drives the circuit breaker
+    pub consecutive_failures: u32,
     /// Last successful query time (not serialized)
     #[serde(skip)]
     pub last_success: Option<Instant>,
@@ -167,7 +166,7 @@ impl Default for UpstreamStats {
             failures: 0,
             ema_response_time_ms: 0.0,
             last_response_time_ms: None,
-            recent_response_times: Vec::with_capacity(10),
+            consecutive_failures: 0,
             last_success: None,
             last_failure: None,
             healthy: true,
@@ -178,11 +177,15 @@ impl Default for UpstreamStats {
 }
 
 impl UpstreamStats {
-    /// EMA smoothing factor (0.3 = recent values have ~30% weight)
-    /// Higher value = more responsive to recent changes
-    const EMA_ALPHA: f64 = 0.5;
-    /// Maximum recent samples to keep
-    const MAX_RECENT_SAMPLES: usize = 10;
+    /// EMA smoothing factor: weight given to the newest sample.
+    /// Kept low so `Fastest` does not flip servers on a single slow response.
+    const EMA_ALPHA: f64 = 0.3;
+    /// Consecutive failures required before a server leaves the rotation.
+    const FAILURE_THRESHOLD: u32 = 3;
+    /// First suspension length; doubles on each subsequent trip.
+    const BASE_SUSPENSION_SECS: u64 = 30;
+    /// Upper bound for the suspension backoff.
+    const MAX_SUSPENSION_SECS: u64 = 300;
 
     /// Create new stats with healthy status
     pub fn new() -> Self {
@@ -192,8 +195,11 @@ impl UpstreamStats {
         }
     }
 
-    /// Get the effective average response time (EMA-based)
-    pub fn avg_response_time_ms(&self) -> u64 {
+    /// Exponentially weighted latency in milliseconds.
+    ///
+    /// Not an arithmetic mean: recent samples dominate, which is what strategy
+    /// selection needs. Returns 0 when there is no successful sample yet.
+    pub fn smoothed_latency_ms(&self) -> u64 {
         if self.successes == 0 {
             0 // No data yet
         } else {
@@ -201,8 +207,9 @@ impl UpstreamStats {
         }
     }
 
-    /// Get the effective average response time for sorting (returns MAX if no data)
-    pub fn avg_response_time_for_sorting(&self) -> u64 {
+    /// Same value as `smoothed_latency_ms`, but ranks unmeasured servers last
+    /// instead of first so they never win a latency comparison by default.
+    pub fn latency_rank_key(&self) -> u64 {
         if self.successes == 0 {
             u64::MAX // No data = worst priority for sorting
         } else {
@@ -226,20 +233,16 @@ impl UpstreamStats {
         self.last_response_time_ms = Some(response_time_ms);
         self.last_success = Some(Instant::now());
         self.healthy = true;
-        
+        self.consecutive_failures = 0;
+
         // Clear suspension on success - server is working again
         if self.suspended_until.is_some() {
             tracing::info!("Server recovered from suspension after successful query");
             self.suspended_until = None;
-            // Reduce suspension duration for next time (but keep some memory)
-            self.suspension_duration_secs = (self.suspension_duration_secs / 2).max(0);
+            // Halve the backoff so a flapping server still escalates faster
+            // than one that has been stable all along.
+            self.suspension_duration_secs /= 2;
         }
-
-        // Update sliding window
-        if self.recent_response_times.len() >= Self::MAX_RECENT_SAMPLES {
-            self.recent_response_times.remove(0);
-        }
-        self.recent_response_times.push(response_time_ms);
 
         // Update EMA
         let new_value = response_time_ms as f64;
@@ -248,8 +251,8 @@ impl UpstreamStats {
             self.ema_response_time_ms = new_value;
         } else {
             // EMA formula: new_ema = alpha * new_value + (1 - alpha) * old_ema
-            self.ema_response_time_ms = Self::EMA_ALPHA * new_value 
-                + (1.0 - Self::EMA_ALPHA) * self.ema_response_time_ms;
+            self.ema_response_time_ms =
+                Self::EMA_ALPHA * new_value + (1.0 - Self::EMA_ALPHA) * self.ema_response_time_ms;
         }
     }
 
@@ -258,40 +261,35 @@ impl UpstreamStats {
         self.queries += 1;
         self.failures += 1;
         self.last_failure = Some(Instant::now());
-        
-        // Mark as unhealthy if failure rate is too high (< 50% success rate after 5+ queries)
-        if self.success_rate() < 0.5 && self.queries >= 5 {
+
+        self.consecutive_failures += 1;
+
+        // Trip on consecutive failures rather than lifetime success rate: a
+        // server with thousands of past successes would otherwise need
+        // thousands of failures before it was taken out of rotation.
+        if self.consecutive_failures >= Self::FAILURE_THRESHOLD {
             self.healthy = false;
-            
+
             // Calculate suspension duration based on success rate
             // Lower success rate = longer suspension
-            let base_duration = 30u64; // Base: 30 seconds
-            let max_duration = 300u64; // Max: 5 minutes
-            
+            let base_duration = Self::BASE_SUSPENSION_SECS;
+            let max_duration = Self::MAX_SUSPENSION_SECS;
+
             // Exponential backoff: double the previous duration, capped at max
             if self.suspension_duration_secs == 0 {
                 self.suspension_duration_secs = base_duration;
             } else {
-                self.suspension_duration_secs = (self.suspension_duration_secs * 2).min(max_duration);
+                self.suspension_duration_secs =
+                    (self.suspension_duration_secs * 2).min(max_duration);
             }
-            
-            // Adjust based on success rate: worse rate = longer suspension
-            let rate_multiplier = if self.success_rate() < 0.2 {
-                2.0 // Very bad: double the suspension
-            } else if self.success_rate() < 0.3 {
-                1.5
-            } else {
-                1.0
-            };
-            
-            let final_duration = ((self.suspension_duration_secs as f64) * rate_multiplier) as u64;
-            let final_duration = final_duration.min(max_duration);
-            
+
+            let final_duration = self.suspension_duration_secs.min(max_duration);
             self.suspended_until = Some(Instant::now() + Duration::from_secs(final_duration));
-            
+
             tracing::warn!(
-                "Server suspended for {}s (success rate: {:.1}%)", 
-                final_duration, 
+                "Server suspended for {}s after {} consecutive failures (success rate: {:.1}%)",
+                final_duration,
+                self.consecutive_failures,
                 self.success_rate() * 100.0
             );
         }
@@ -320,34 +318,22 @@ impl UpstreamStats {
 
     /// Check if server should be considered healthy and available
     pub fn is_healthy(&self) -> bool {
-        // If suspended, check if suspension period has ended
-        if self.is_suspended() {
-            return false;
-        }
-        
-        // If suspension just ended, give it another chance
-        if self.suspended_until.is_some() && !self.is_suspended() {
-            return true;
-        }
-        
-        self.healthy
+        // Pure routing predicate. Recovery from `healthy == false` is driven by
+        // the active health checker, not by suspension expiry: letting the
+        // timeout implicitly restore health made `healthy` dead state and kept
+        // failing servers in rotation permanently.
+        !self.is_suspended() && self.healthy
     }
 
     /// Reset health status (for manual recovery)
     pub fn reset_health(&mut self) {
         self.healthy = true;
         self.failures = 0;
+        self.consecutive_failures = 0;
         self.suspended_until = None;
         self.suspension_duration_secs = 0;
     }
-
-    /// Get recent response times for debugging
-    #[allow(dead_code)]
-    pub fn recent_times(&self) -> &[u64] {
-        &self.recent_response_times
-    }
 }
-
 
 /// Health check result
 #[derive(Debug, Clone)]
@@ -375,12 +361,14 @@ pub struct UpstreamManager {
     /// Database connection for persistence
     db: Option<Arc<Database>>,
     /// Health check interval
-    #[allow(dead_code)]
     health_check_interval: Duration,
 }
 
 #[allow(dead_code)]
 impl UpstreamManager {
+    /// A latency sample older than this no longer reflects current conditions.
+    const STATS_STALE_AFTER: Duration = Duration::from_secs(300);
+
     /// Create a new upstream manager without database
     pub fn new() -> Self {
         Self {
@@ -464,23 +452,26 @@ impl UpstreamManager {
 
         servers
             .iter()
-            .filter(|s| {
-                s.enabled && stats.get(&s.id).map(|st| st.is_healthy()).unwrap_or(true)
-            })
+            .filter(|s| s.enabled && stats.get(&s.id).map(|st| st.is_healthy()).unwrap_or(true))
             .cloned()
             .collect()
     }
 
     /// Get a server by ID
     pub async fn get_server(&self, id: i64) -> Option<UpstreamServer> {
-        self.servers.read().await.iter().find(|s| s.id == id).cloned()
+        self.servers
+            .read()
+            .await
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
     }
 
     /// Add a server (in-memory only)
     pub async fn add_server(&self, server: UpstreamServer) {
         let mut servers = self.servers.write().await;
         let mut stats = self.stats.write().await;
-        
+
         stats.entry(server.id).or_insert_with(UpstreamStats::new);
         servers.push(server);
     }
@@ -489,7 +480,7 @@ impl UpstreamManager {
     pub async fn remove_server(&self, id: i64) {
         let mut servers = self.servers.write().await;
         let mut stats = self.stats.write().await;
-        
+
         servers.retain(|s| s.id != id);
         stats.remove(&id);
     }
@@ -533,14 +524,12 @@ impl UpstreamManager {
         let servers = self.get_healthy_servers().await;
         let stats = self.stats.read().await;
 
-        servers
-            .into_iter()
-            .min_by_key(|s| {
-                stats
-                    .get(&s.id)
-                    .map(|st| st.avg_response_time_for_sorting())
-                    .unwrap_or(u64::MAX)
-            })
+        servers.into_iter().min_by_key(|s| {
+            stats
+                .get(&s.id)
+                .map(|st| st.latency_rank_key())
+                .unwrap_or(u64::MAX)
+        })
     }
 
     /// Check if any server has historical stats (at least one successful query)
@@ -555,39 +544,135 @@ impl UpstreamManager {
         if servers.is_empty() {
             return false;
         }
-        
+
         let stats = self.stats.read().await;
-        servers.iter().all(|s| {
-            stats.get(&s.id).map(|st| st.successes > 0).unwrap_or(false)
-        })
+        servers
+            .iter()
+            .all(|s| stats.get(&s.id).map(|st| st.successes > 0).unwrap_or(false))
     }
 
     /// Check if any healthy server needs re-probing
     /// Returns true if:
     /// - Any server has no stats
     /// - Any server hasn't been queried in the last 5 minutes
-    pub async fn needs_reprobe(&self) -> bool {
+    pub async fn servers_needing_probe(&self) -> Vec<UpstreamServer> {
         let servers = self.get_healthy_servers().await;
         if servers.is_empty() {
-            return false;
+            return Vec::new();
         }
-        
+
         let stats = self.stats.read().await;
-        let reprobe_threshold = Duration::from_secs(300); // 5 minutes
-        
-        servers.iter().any(|s| {
-            match stats.get(&s.id) {
-                None => true, // No stats at all
-                Some(st) => {
-                    if st.successes == 0 {
-                        return true; // Never succeeded
-                    }
-                    // Check if last success was too long ago
-                    match st.last_success {
-                        None => true,
-                        Some(last) => last.elapsed() > reprobe_threshold,
+        servers
+            .into_iter()
+            .filter(|s| match stats.get(&s.id) {
+                None => true,
+                Some(st) => match st.last_success {
+                    None => true,
+                    Some(last) => last.elapsed() > Self::STATS_STALE_AFTER,
+                },
+            })
+            .collect()
+    }
+
+    /// Probe every server that has no usable latency sample, plus every server
+    /// currently out of rotation so it has a path back in.
+    ///
+    /// Probes run concurrently and their outcome is recorded through the normal
+    /// success/failure path, so a passing probe clears the unhealthy flag.
+    async fn probe_servers(&self, servers: Vec<UpstreamServer>) {
+        if servers.is_empty() {
+            return;
+        }
+
+        let probes = servers.into_iter().map(|server| async move {
+            let outcome = match create_client(server.clone()) {
+                Ok(client) => client.health_check().await,
+                Err(e) => Err(e),
+            };
+            (server, outcome)
+        });
+
+        for (server, outcome) in futures::future::join_all(probes).await {
+            match outcome {
+                Ok(elapsed) => {
+                    let was_unhealthy = self
+                        .get_stats(server.id)
+                        .await
+                        .map(|s| !s.is_healthy())
+                        .unwrap_or(false);
+
+                    self.record_success(server.id, elapsed.as_millis() as u64)
+                        .await;
+
+                    if was_unhealthy {
+                        tracing::info!(
+                            "Health probe restored {} ({}) to rotation in {}ms",
+                            server.name,
+                            server.address,
+                            elapsed.as_millis()
+                        );
                     }
                 }
+                Err(e) => {
+                    tracing::warn!(
+                        "Health probe failed for {} ({}): {}",
+                        server.name,
+                        server.address,
+                        e
+                    );
+                    self.record_failure(server.id).await;
+                }
+            }
+        }
+    }
+
+    /// Servers that need a probe: those lacking a fresh latency sample and
+    /// those suspended or flagged unhealthy, which no live query would reach.
+    async fn probe_candidates(&self) -> Vec<UpstreamServer> {
+        let servers = self.servers.read().await.clone();
+        let stats = self.stats.read().await;
+
+        servers
+            .into_iter()
+            .filter(|s| s.enabled)
+            .filter(|s| match stats.get(&s.id) {
+                None => true,
+                Some(st) => {
+                    if !st.is_healthy() {
+                        return true;
+                    }
+                    match st.last_success {
+                        None => true,
+                        Some(last) => last.elapsed() > Self::STATS_STALE_AFTER,
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// Run one health-check sweep over all servers that need it.
+    pub async fn run_health_checks(&self) {
+        let candidates = self.probe_candidates().await;
+        self.probe_servers(candidates).await;
+    }
+
+    /// Spawn the background health checker.
+    ///
+    /// This is the only mechanism that returns an unhealthy server to rotation:
+    /// live traffic never reaches a server that `get_healthy_servers` excludes.
+    pub fn spawn_health_checker(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let interval_period = self.health_check_interval;
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval_period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            tracing::info!(
+                "Upstream health checker started (interval: {:?})",
+                interval_period
+            );
+
+            loop {
+                ticker.tick().await;
+                self.run_health_checks().await;
             }
         })
     }
@@ -612,20 +697,40 @@ impl Default for UpstreamManager {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_protocol_from_str() {
-        assert_eq!(UpstreamProtocol::from_str("udp"), Some(UpstreamProtocol::Udp));
-        assert_eq!(UpstreamProtocol::from_str("UDP"), Some(UpstreamProtocol::Udp));
-        assert_eq!(UpstreamProtocol::from_str("dot"), Some(UpstreamProtocol::Dot));
-        assert_eq!(UpstreamProtocol::from_str("doh"), Some(UpstreamProtocol::Doh));
-        assert_eq!(UpstreamProtocol::from_str("doq"), Some(UpstreamProtocol::Doq));
-        assert_eq!(UpstreamProtocol::from_str("doh3"), Some(UpstreamProtocol::Doh3));
-        assert_eq!(UpstreamProtocol::from_str("h3"), Some(UpstreamProtocol::Doh3));
+        assert_eq!(
+            UpstreamProtocol::from_str("udp"),
+            Some(UpstreamProtocol::Udp)
+        );
+        assert_eq!(
+            UpstreamProtocol::from_str("UDP"),
+            Some(UpstreamProtocol::Udp)
+        );
+        assert_eq!(
+            UpstreamProtocol::from_str("dot"),
+            Some(UpstreamProtocol::Dot)
+        );
+        assert_eq!(
+            UpstreamProtocol::from_str("doh"),
+            Some(UpstreamProtocol::Doh)
+        );
+        assert_eq!(
+            UpstreamProtocol::from_str("doq"),
+            Some(UpstreamProtocol::Doq)
+        );
+        assert_eq!(
+            UpstreamProtocol::from_str("doh3"),
+            Some(UpstreamProtocol::Doh3)
+        );
+        assert_eq!(
+            UpstreamProtocol::from_str("h3"),
+            Some(UpstreamProtocol::Doh3)
+        );
         assert_eq!(UpstreamProtocol::from_str("invalid"), None);
     }
 
@@ -634,19 +739,14 @@ mod tests {
         assert_eq!(UpstreamProtocol::Udp.default_port(), 53);
         assert_eq!(UpstreamProtocol::Dot.default_port(), 853);
         assert_eq!(UpstreamProtocol::Doh.default_port(), 443);
-        assert_eq!(UpstreamProtocol::Doq.default_port(), 853);  // RFC 9250: DoQ uses UDP port 853
+        assert_eq!(UpstreamProtocol::Doq.default_port(), 853); // RFC 9250: DoQ uses UDP port 853
         assert_eq!(UpstreamProtocol::Doh3.default_port(), 443); // DoH3 uses UDP port 443
     }
 
     #[test]
     fn test_upstream_server_creation() {
-        let server = UpstreamServer::new(
-            1,
-            "Cloudflare",
-            "1.1.1.1:53",
-            UpstreamProtocol::Udp,
-            5000,
-        );
+        let server =
+            UpstreamServer::new(1, "Cloudflare", "1.1.1.1:53", UpstreamProtocol::Udp, 5000);
 
         assert_eq!(server.id, 1);
         assert_eq!(server.name, "Cloudflare");
@@ -659,25 +759,54 @@ mod tests {
     #[test]
     fn test_upstream_stats_success() {
         let mut stats = UpstreamStats::new();
-        
+
         stats.record_success(50);
         stats.record_success(100);
-        
+
         assert_eq!(stats.queries, 2);
         assert_eq!(stats.successes, 2);
         assert_eq!(stats.failures, 0);
-        assert_eq!(stats.avg_response_time_ms(), 75);
         assert_eq!(stats.success_rate(), 1.0);
         assert!(stats.is_healthy());
     }
 
     #[test]
+    fn test_latency_is_ema_not_arithmetic_mean() {
+        let mut stats = UpstreamStats::new();
+
+        // First sample seeds the EMA directly.
+        stats.record_success(50);
+        assert_eq!(stats.smoothed_latency_ms(), 50);
+
+        // Second sample: 0.3 * 100 + 0.7 * 50 = 65, not the arithmetic mean 75.
+        stats.record_success(100);
+        assert_eq!(stats.smoothed_latency_ms(), 65);
+    }
+
+    #[test]
+    fn test_latency_reacts_to_sustained_change() {
+        let mut stats = UpstreamStats::new();
+        stats.record_success(20);
+        for _ in 0..20 {
+            stats.record_success(200);
+        }
+
+        // A sustained shift must converge toward the new level.
+        let latency = stats.smoothed_latency_ms();
+        assert!(
+            latency > 190,
+            "expected convergence toward 200, got {}",
+            latency
+        );
+    }
+
+    #[test]
     fn test_upstream_stats_failure() {
         let mut stats = UpstreamStats::new();
-        
+
         stats.record_failure();
         stats.record_failure();
-        
+
         assert_eq!(stats.queries, 2);
         assert_eq!(stats.successes, 0);
         assert_eq!(stats.failures, 2);
@@ -687,24 +816,24 @@ mod tests {
     #[test]
     fn test_upstream_stats_health_degradation() {
         let mut stats = UpstreamStats::new();
-        
+
         // Need at least 5 queries for health check
         for _ in 0..5 {
             stats.record_failure();
         }
-        
+
         assert!(!stats.is_healthy());
     }
 
     #[test]
     fn test_upstream_stats_reset_health() {
         let mut stats = UpstreamStats::new();
-        
+
         for _ in 0..5 {
             stats.record_failure();
         }
         assert!(!stats.is_healthy());
-        
+
         stats.reset_health();
         assert!(stats.is_healthy());
     }
@@ -712,19 +841,13 @@ mod tests {
     #[tokio::test]
     async fn test_upstream_manager_add_server() {
         let manager = UpstreamManager::new();
-        
-        let server = UpstreamServer::new(
-            1,
-            "Test",
-            "8.8.8.8:53",
-            UpstreamProtocol::Udp,
-            5000,
-        );
-        
+
+        let server = UpstreamServer::new(1, "Test", "8.8.8.8:53", UpstreamProtocol::Udp, 5000);
+
         manager.add_server(server).await;
-        
+
         assert_eq!(manager.server_count().await, 1);
-        
+
         let servers = manager.get_servers().await;
         assert_eq!(servers[0].name, "Test");
     }
@@ -732,16 +855,28 @@ mod tests {
     #[tokio::test]
     async fn test_upstream_manager_remove_server() {
         let manager = UpstreamManager::new();
-        
-        manager.add_server(UpstreamServer::new(
-            1, "Test1", "8.8.8.8:53", UpstreamProtocol::Udp, 5000,
-        )).await;
-        manager.add_server(UpstreamServer::new(
-            2, "Test2", "8.8.4.4:53", UpstreamProtocol::Udp, 5000,
-        )).await;
-        
+
+        manager
+            .add_server(UpstreamServer::new(
+                1,
+                "Test1",
+                "8.8.8.8:53",
+                UpstreamProtocol::Udp,
+                5000,
+            ))
+            .await;
+        manager
+            .add_server(UpstreamServer::new(
+                2,
+                "Test2",
+                "8.8.4.4:53",
+                UpstreamProtocol::Udp,
+                5000,
+            ))
+            .await;
+
         manager.remove_server(1).await;
-        
+
         assert_eq!(manager.server_count().await, 1);
         assert!(manager.get_server(1).await.is_none());
         assert!(manager.get_server(2).await.is_some());
@@ -750,35 +885,53 @@ mod tests {
     #[tokio::test]
     async fn test_upstream_manager_stats() {
         let manager = UpstreamManager::new();
-        
-        manager.add_server(UpstreamServer::new(
-            1, "Test", "8.8.8.8:53", UpstreamProtocol::Udp, 5000,
-        )).await;
-        
+
+        manager
+            .add_server(UpstreamServer::new(
+                1,
+                "Test",
+                "8.8.8.8:53",
+                UpstreamProtocol::Udp,
+                5000,
+            ))
+            .await;
+
         manager.record_success(1, 50).await;
         manager.record_success(1, 100).await;
-        
+
         let stats = manager.get_stats(1).await.unwrap();
         assert_eq!(stats.successes, 2);
-        assert_eq!(stats.avg_response_time_ms(), 75);
+        assert_eq!(stats.smoothed_latency_ms(), 65);
     }
 
     #[tokio::test]
     async fn test_upstream_manager_healthy_servers() {
         let manager = UpstreamManager::new();
-        
-        manager.add_server(UpstreamServer::new(
-            1, "Healthy", "8.8.8.8:53", UpstreamProtocol::Udp, 5000,
-        )).await;
-        manager.add_server(UpstreamServer::new(
-            2, "Unhealthy", "8.8.4.4:53", UpstreamProtocol::Udp, 5000,
-        )).await;
-        
+
+        manager
+            .add_server(UpstreamServer::new(
+                1,
+                "Healthy",
+                "8.8.8.8:53",
+                UpstreamProtocol::Udp,
+                5000,
+            ))
+            .await;
+        manager
+            .add_server(UpstreamServer::new(
+                2,
+                "Unhealthy",
+                "8.8.4.4:53",
+                UpstreamProtocol::Udp,
+                5000,
+            ))
+            .await;
+
         // Make server 2 unhealthy
         for _ in 0..5 {
             manager.record_failure(2).await;
         }
-        
+
         let healthy = manager.get_healthy_servers().await;
         assert_eq!(healthy.len(), 1);
         assert_eq!(healthy[0].id, 1);
@@ -787,17 +940,29 @@ mod tests {
     #[tokio::test]
     async fn test_upstream_manager_fastest_server() {
         let manager = UpstreamManager::new();
-        
-        manager.add_server(UpstreamServer::new(
-            1, "Slow", "8.8.8.8:53", UpstreamProtocol::Udp, 5000,
-        )).await;
-        manager.add_server(UpstreamServer::new(
-            2, "Fast", "8.8.4.4:53", UpstreamProtocol::Udp, 5000,
-        )).await;
-        
+
+        manager
+            .add_server(UpstreamServer::new(
+                1,
+                "Slow",
+                "8.8.8.8:53",
+                UpstreamProtocol::Udp,
+                5000,
+            ))
+            .await;
+        manager
+            .add_server(UpstreamServer::new(
+                2,
+                "Fast",
+                "8.8.4.4:53",
+                UpstreamProtocol::Udp,
+                5000,
+            ))
+            .await;
+
         manager.record_success(1, 100).await;
         manager.record_success(2, 50).await;
-        
+
         let fastest = manager.get_fastest_server().await.unwrap();
         assert_eq!(fastest.id, 2);
     }
@@ -805,13 +970,19 @@ mod tests {
     #[tokio::test]
     async fn test_upstream_manager_clear() {
         let manager = UpstreamManager::new();
-        
-        manager.add_server(UpstreamServer::new(
-            1, "Test", "8.8.8.8:53", UpstreamProtocol::Udp, 5000,
-        )).await;
-        
+
+        manager
+            .add_server(UpstreamServer::new(
+                1,
+                "Test",
+                "8.8.8.8:53",
+                UpstreamProtocol::Udp,
+                5000,
+            ))
+            .await;
+
         manager.clear().await;
-        
+
         assert_eq!(manager.server_count().await, 0);
     }
 }

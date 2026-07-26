@@ -105,9 +105,6 @@
         </div>
       </el-main>
     </el-container>
-    
-    <!-- AI 助手浮动组件 -->
-    <AiAssistant />
   </el-container>
 </template>
 
@@ -118,9 +115,8 @@ import { useAuthStore } from '../stores/auth'
 import { 
   ArrowDown, SwitchButton, Odometer, Document, Edit, 
   Connection, Coin, Search, List, Monitor, Setting,
-  Expand, Fold, ChatDotRound
+  Expand, Fold
 } from '@element-plus/icons-vue'
-import AiAssistant from '../components/AiAssistant.vue'
 import { useResponsive } from '../composables/useResponsive'
 
 const route = useRoute()
@@ -142,7 +138,6 @@ const menuItems = [
   { path: '/logs', label: '查询日志', icon: List },
   { path: '/listeners', label: '服务监听', icon: Monitor },
   { path: '/settings', label: '设置', icon: Setting },
-  { path: '/llm', label: 'AI 助手', icon: ChatDotRound },
 ]
 
 const pageMap = menuItems.reduce((acc, item) => {

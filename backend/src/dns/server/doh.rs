@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Query, State, ConnectInfo},
+    extract::{ConnectInfo, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
@@ -125,7 +125,10 @@ async fn handle_post_query(
 }
 
 /// Get client IP from request headers or connection
-fn get_client_ip(request: &axum::http::Request<axum::body::Body>, conn_addr: Option<SocketAddr>) -> String {
+fn get_client_ip(
+    request: &axum::http::Request<axum::body::Body>,
+    conn_addr: Option<SocketAddr>,
+) -> String {
     // Try X-Forwarded-For header first (for reverse proxy)
     if let Some(forwarded) = request.headers().get("x-forwarded-for") {
         if let Ok(value) = forwarded.to_str() {
@@ -134,33 +137,39 @@ fn get_client_ip(request: &axum::http::Request<axum::body::Body>, conn_addr: Opt
             }
         }
     }
-    
+
     // Try X-Real-IP header
     if let Some(real_ip) = request.headers().get("x-real-ip") {
         if let Ok(value) = real_ip.to_str() {
             return value.to_string();
         }
     }
-    
+
     // Use connection address if available
     if let Some(addr) = conn_addr {
         return addr.ip().to_string();
     }
-    
+
     // Default to unknown
     "unknown".to_string()
 }
 
-
 /// Process a DNS query and return an HTTP response
-async fn process_dns_query(resolver: &DnsResolver, query_bytes: &[u8], client_ip: &str) -> Response {
+async fn process_dns_query(
+    resolver: &DnsResolver,
+    query_bytes: &[u8],
+    client_ip: &str,
+) -> Response {
     // Parse the DNS query
     let query = match DnsQuery::from_bytes(query_bytes) {
         Ok(q) => q,
         Err(e) => {
             warn!("Failed to parse DNS query: {}", e);
             let response = DnsResponse::servfail(0);
-            return create_dns_response(&response, &DnsQuery::new(".", crate::dns::message::RecordType::A));
+            return create_dns_response(
+                &response,
+                &DnsQuery::new(".", crate::dns::message::RecordType::A),
+            );
         }
     };
 
@@ -202,7 +211,11 @@ fn create_dns_response(response: &DnsResponse, query: &DnsQuery) -> Response {
             .into_response(),
         Err(e) => {
             warn!("Failed to encode DNS response: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to encode DNS response").into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to encode DNS response",
+            )
+                .into_response()
         }
     }
 }
@@ -270,9 +283,18 @@ mod tests {
     use crate::dns::rewrite::RewriteEngine;
     use crate::dns::CacheKey;
     use axum::body::Body;
+    use axum::extract::connect_info::ConnectInfo;
     use axum::http::Request;
-    use std::net::Ipv4Addr;
+    use std::net::{Ipv4Addr, SocketAddr};
     use tower::ServiceExt;
+
+    /// Attaches the connection info that `into_make_service_with_connect_info`
+    /// supplies in production but `oneshot` does not.
+    fn with_connect_info(mut request: Request<Body>) -> Request<Body> {
+        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        request.extensions_mut().insert(ConnectInfo(addr));
+        request
+    }
 
     fn create_test_resolver() -> Arc<DnsResolver> {
         let rewrite_engine = Arc::new(RewriteEngine::new());
@@ -322,7 +344,7 @@ mod tests {
             .body(Body::from(query_bytes))
             .unwrap();
 
-        let response = router.oneshot(request).await.unwrap();
+        let response = router.oneshot(with_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
         // Check content type
@@ -359,7 +381,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = router.oneshot(request).await.unwrap();
+        let response = router.oneshot(with_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -376,7 +398,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = router.oneshot(request).await.unwrap();
+        let response = router.oneshot(with_connect_info(request)).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

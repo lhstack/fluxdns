@@ -17,7 +17,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::db::{Database, RewriteRule as DbRewriteRule};
+use crate::infrastructure::repository::{Database, RewriteRule as DbRewriteRule};
 
 /// Match type for rewrite rules
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,14 +101,11 @@ impl RewriteAction {
     }
 }
 
-
 /// A compiled rewrite rule
 #[derive(Debug, Clone)]
 pub struct RewriteRule {
     /// Rule ID from database
     pub id: i64,
-    /// Pattern to match
-    pub pattern: String,
     /// Match type
     pub match_type: MatchType,
     /// Action to perform
@@ -119,6 +116,12 @@ pub struct RewriteRule {
     pub priority: i32,
     /// Compiled regex (for regex match type)
     compiled_regex: Option<Regex>,
+    /// Lowercased pattern, precomputed for matching.
+    ///
+    /// Matching is case-insensitive, and lowercasing the pattern on every call
+    /// meant one allocation per rule per query while the pattern itself never
+    /// changes.
+    pattern_lower: String,
 }
 
 #[allow(dead_code)]
@@ -138,8 +141,8 @@ impl RewriteRule {
         };
 
         Self {
+            pattern_lower: pattern.to_lowercase(),
             id,
-            pattern,
             match_type,
             action,
             enabled: true,
@@ -151,10 +154,8 @@ impl RewriteRule {
     /// Create from database model
     pub fn from_db(db_rule: &DbRewriteRule) -> Option<Self> {
         let match_type = MatchType::from_str(&db_rule.match_type)?;
-        let action = RewriteAction::from_parts(
-            &db_rule.action_type,
-            db_rule.action_value.as_deref(),
-        )?;
+        let action =
+            RewriteAction::from_parts(&db_rule.action_type, db_rule.action_value.as_deref())?;
 
         let compiled_regex = if match_type == MatchType::Regex {
             Regex::new(&db_rule.pattern).ok()
@@ -164,7 +165,7 @@ impl RewriteRule {
 
         Some(Self {
             id: db_rule.id,
-            pattern: db_rule.pattern.clone(),
+            pattern_lower: db_rule.pattern.to_lowercase(),
             match_type,
             action,
             enabled: db_rule.enabled,
@@ -175,17 +176,22 @@ impl RewriteRule {
 
     /// Check if this rule matches the given domain
     pub fn matches(&self, domain: &str) -> bool {
+        self.matches_lowercase(&domain.to_lowercase())
+    }
+
+    /// Check a domain that the caller has already lowercased.
+    ///
+    /// `RewriteEngine::check` walks every rule for one domain, so lowercasing is
+    /// hoisted out of the loop and done once per query instead of once per rule.
+    pub fn matches_lowercase(&self, domain_lower: &str) -> bool {
         if !self.enabled {
             return false;
         }
 
-        let domain_lower = domain.to_lowercase();
-        let pattern_lower = self.pattern.to_lowercase();
-
         match self.match_type {
-            MatchType::Exact => domain_lower == pattern_lower,
-            MatchType::Wildcard => self.wildcard_matches(&domain_lower, &pattern_lower),
-            MatchType::Regex => self.regex_matches(&domain_lower),
+            MatchType::Exact => domain_lower == self.pattern_lower,
+            MatchType::Wildcard => self.wildcard_matches(domain_lower, &self.pattern_lower),
+            MatchType::Regex => self.regex_matches(domain_lower),
         }
     }
 
@@ -197,8 +203,7 @@ impl RewriteRule {
             if domain.ends_with(suffix) {
                 // Make sure there's something before the suffix
                 let prefix_len = domain.len() - suffix.len();
-                prefix_len > 0 && !domain[..prefix_len].contains('.')
-                    || prefix_len > 0
+                prefix_len > 0 && !domain[..prefix_len].contains('.') || prefix_len > 0
             }
             // Actually, *.example.com should match ANY subdomain
             else {
@@ -236,7 +241,6 @@ pub struct RewriteResult {
     /// The action to perform
     pub action: RewriteAction,
 }
-
 
 /// DNS Rewrite Engine
 ///
@@ -279,10 +283,10 @@ impl RewriteEngine {
                 .iter()
                 .filter_map(|r| RewriteRule::from_db(r))
                 .collect();
-            
+
             // Sort by priority (highest first)
             rules.sort_by(|a, b| b.priority.cmp(&a.priority));
-            
+
             let mut current_rules = self.rules.write().await;
             *current_rules = rules;
         }
@@ -295,18 +299,23 @@ impl RewriteEngine {
     }
 
     /// Check if a domain matches any rewrite rule
+    /// Check if a domain matches any rewrite rule
+    ///
+    /// The domain is lowercased once here rather than inside each rule's match,
+    /// so rule count no longer multiplies the allocation cost of a query.
     pub async fn check(&self, domain: &str) -> Option<RewriteResult> {
+        let domain_lower = domain.to_lowercase();
         let rules = self.rules.read().await;
-        
+
         for rule in rules.iter() {
-            if rule.matches(domain) {
+            if rule.matches_lowercase(&domain_lower) {
                 return Some(RewriteResult {
                     rule_id: rule.id,
                     action: rule.action.clone(),
                 });
             }
         }
-        
+
         None
     }
 
@@ -445,7 +454,10 @@ mod tests {
 
         let domain_action = RewriteAction::MapToDomain("example.com".to_string());
         assert_eq!(domain_action.action_type(), "map_domain");
-        assert_eq!(domain_action.action_value(), Some("example.com".to_string()));
+        assert_eq!(
+            domain_action.action_value(),
+            Some("example.com".to_string())
+        );
 
         let block_action = RewriteAction::Block;
         assert_eq!(block_action.action_type(), "block");
@@ -455,22 +467,26 @@ mod tests {
     #[tokio::test]
     async fn test_rewrite_engine_check() {
         let engine = RewriteEngine::new();
-        
-        engine.add_rule(RewriteRule::new(
-            1,
-            "blocked.com".to_string(),
-            MatchType::Exact,
-            RewriteAction::Block,
-            10,
-        )).await;
 
-        engine.add_rule(RewriteRule::new(
-            2,
-            "*.ads.com".to_string(),
-            MatchType::Wildcard,
-            RewriteAction::MapToIp(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))),
-            5,
-        )).await;
+        engine
+            .add_rule(RewriteRule::new(
+                1,
+                "blocked.com".to_string(),
+                MatchType::Exact,
+                RewriteAction::Block,
+                10,
+            ))
+            .await;
+
+        engine
+            .add_rule(RewriteRule::new(
+                2,
+                "*.ads.com".to_string(),
+                MatchType::Wildcard,
+                RewriteAction::MapToIp(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))),
+                5,
+            ))
+            .await;
 
         let result = engine.check("blocked.com").await;
         assert!(result.is_some());
@@ -487,24 +503,28 @@ mod tests {
     #[tokio::test]
     async fn test_rewrite_engine_priority() {
         let engine = RewriteEngine::new();
-        
+
         // Lower priority rule
-        engine.add_rule(RewriteRule::new(
-            1,
-            "*.example.com".to_string(),
-            MatchType::Wildcard,
-            RewriteAction::MapToDomain("fallback.com".to_string()),
-            1,
-        )).await;
+        engine
+            .add_rule(RewriteRule::new(
+                1,
+                "*.example.com".to_string(),
+                MatchType::Wildcard,
+                RewriteAction::MapToDomain("fallback.com".to_string()),
+                1,
+            ))
+            .await;
 
         // Higher priority rule
-        engine.add_rule(RewriteRule::new(
-            2,
-            "special.example.com".to_string(),
-            MatchType::Exact,
-            RewriteAction::Block,
-            10,
-        )).await;
+        engine
+            .add_rule(RewriteRule::new(
+                2,
+                "special.example.com".to_string(),
+                MatchType::Exact,
+                RewriteAction::Block,
+                10,
+            ))
+            .await;
 
         // Should match higher priority rule
         let result = engine.check("special.example.com").await;
@@ -515,44 +535,50 @@ mod tests {
     #[tokio::test]
     async fn test_rewrite_engine_remove_rule() {
         let engine = RewriteEngine::new();
-        
-        engine.add_rule(RewriteRule::new(
-            1,
-            "example.com".to_string(),
-            MatchType::Exact,
-            RewriteAction::Block,
-            0,
-        )).await;
+
+        engine
+            .add_rule(RewriteRule::new(
+                1,
+                "example.com".to_string(),
+                MatchType::Exact,
+                RewriteAction::Block,
+                0,
+            ))
+            .await;
 
         assert_eq!(engine.rule_count().await, 1);
-        
+
         engine.remove_rule(1).await;
-        
+
         assert_eq!(engine.rule_count().await, 0);
     }
 
     #[tokio::test]
     async fn test_rewrite_engine_clear() {
         let engine = RewriteEngine::new();
-        
-        engine.add_rule(RewriteRule::new(
-            1,
-            "a.com".to_string(),
-            MatchType::Exact,
-            RewriteAction::Block,
-            0,
-        )).await;
 
-        engine.add_rule(RewriteRule::new(
-            2,
-            "b.com".to_string(),
-            MatchType::Exact,
-            RewriteAction::Block,
-            0,
-        )).await;
+        engine
+            .add_rule(RewriteRule::new(
+                1,
+                "a.com".to_string(),
+                MatchType::Exact,
+                RewriteAction::Block,
+                0,
+            ))
+            .await;
+
+        engine
+            .add_rule(RewriteRule::new(
+                2,
+                "b.com".to_string(),
+                MatchType::Exact,
+                RewriteAction::Block,
+                0,
+            ))
+            .await;
 
         engine.clear_rules().await;
-        
+
         assert_eq!(engine.rule_count().await, 0);
     }
 
@@ -577,21 +603,15 @@ mod property_tests {
 
     /// Strategy to generate valid domain names
     fn domain_strategy() -> impl Strategy<Value = String> {
-        (label_strategy(), label_strategy())
-            .prop_map(|(l1, l2)| format!("{}.{}", l1, l2))
-    }
-
-    /// Strategy to generate subdomain names
-    fn subdomain_strategy() -> impl Strategy<Value = String> {
-        (label_strategy(), label_strategy(), label_strategy())
-            .prop_map(|(sub, l1, l2)| format!("{}.{}.{}", sub, l1, l2))
+        (label_strategy(), label_strategy()).prop_map(|(l1, l2)| format!("{}.{}", l1, l2))
     }
 
     /// Strategy to generate rewrite actions
     fn action_strategy() -> impl Strategy<Value = RewriteAction> {
         prop_oneof![
-            (any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>())
-                .prop_map(|(a, b, c, d)| RewriteAction::MapToIp(IpAddr::V4(Ipv4Addr::new(a, b, c, d)))),
+            (any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>()).prop_map(|(a, b, c, d)| {
+                RewriteAction::MapToIp(IpAddr::V4(Ipv4Addr::new(a, b, c, d)))
+            }),
             domain_strategy().prop_map(|d| RewriteAction::MapToDomain(d)),
             Just(RewriteAction::Block),
         ]
@@ -716,10 +736,10 @@ mod property_tests {
         fn prop_action_roundtrip(action in action_strategy()) {
             let action_type = action.action_type();
             let action_value = action.action_value();
-            
+
             let reconstructed = RewriteAction::from_parts(action_type, action_value.as_deref());
             prop_assert!(reconstructed.is_some(), "Action should be reconstructable from parts");
-            
+
             let reconstructed = reconstructed.unwrap();
             prop_assert_eq!(reconstructed.action_type(), action.action_type());
             prop_assert_eq!(reconstructed.action_value(), action.action_value());
